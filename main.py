@@ -20,6 +20,11 @@ READ_MAX_GAP       = 8    # byte: gap massimo tollerato tra due parametri per un
 READ_MAX_CHUNK     = 128  # byte: dimensione massima di un singolo chunk di lettura
 READ_RETRIES       = 3    # Numero di tentativi in caso di fallimento
 
+# ── Spaziatura uniforme ───────────────────────────────────────────────────────
+PAD    = 8
+PAD_SM = 4
+PAD_LG = 12
+
 
 class TkTextHandler(logging.Handler):
     """
@@ -61,21 +66,17 @@ class TkTextHandler(logging.Handler):
 
 def setup_style():
     """
-    Configura gli stili predefiniti per i widget di ttk.
+    Configura font e padding mantenendo il tema di sistema.
     """
     style = ttk.Style()
-    # Configurazione per bottoni
-    style.configure("TButton", font=("Helvetica", 10), padding=5)
-    style.map("TButton", foreground=[("pressed", "blue"), ("active", "darkblue")])
-    style.configure("Disabled.TButton", background="lightgray", foreground="gray")
-
-    # Configurazione per etichette
-    style.configure("TLabel", font=("Helvetica", 10))
+    # Font e padding uniformi
+    style.configure("TButton",   font=("Helvetica", 10), padding=(8, 4))
+    style.configure("TLabel",    font=("Helvetica", 10))
+    style.configure("TEntry",    font=("Helvetica", 10), padding=3)
     style.configure("Status.TLabel", font=("Helvetica", 10, "bold"))
-
-    # Configurazione per Treeview (lista/tabella gerarchica)
-    style.configure("Treeview", font=("Helvetica", 7))  # Dimensione testo tabella
-    style.configure("Treeview.Heading", font=("Helvetica", 7, "bold"))  # Intestazioni
+    # Treeview: font leggibile (da 7pt a 9pt) e righe più alte
+    style.configure("Treeview",         font=("Helvetica", 9), rowheight=22)
+    style.configure("Treeview.Heading", font=("Helvetica", 9, "bold"))
 
 
 class BluetoothApp:
@@ -104,6 +105,7 @@ class BluetoothApp:
 
         # Variabili legate allo stato dell'applicazione
         self.connection_status = tk.StringVar(value="Disconnesso")
+        self.device_info = tk.StringVar(value="")   # "Nome  |  MAC"
         self.data_output = tk.StringVar(value="")
         self.is_scanning = False
 
@@ -185,133 +187,220 @@ class BluetoothApp:
         # Collega il TkTextHandler ora che il widget è pronto
         self._attach_ui_logging(self.log_text)
 
+    def _set_connection_status(self, connected: bool, text: str | None = None):
+        """Aggiorna pallino colorato + testo stato + info dispositivo."""
+        if connected:
+            color = "green"
+            label = text or "Connesso"
+        else:
+            color = "red"
+            label = text or "Disconnesso"
+            self.device_info.set("")
+        self._dot.itemconfig(self._dot_id, fill=color, outline=color)
+        self.connection_status.set(label)
+        self.status_label.config(foreground=color)
+
+    def _validate_hex_input(self, entry_widget, event=None):
+        """Valida in tempo reale il campo hex: bordo verde/rosso."""
+        val = entry_widget.get().replace(" ", "")
+        if val == "":
+            entry_widget.config(highlightthickness=0)
+            return
+        try:
+            bytearray.fromhex(val)
+            entry_widget.config(highlightbackground="green",
+                                highlightcolor="green", highlightthickness=2)
+        except ValueError:
+            entry_widget.config(highlightbackground="red",
+                                highlightcolor="red", highlightthickness=2)
+
+    def _format_read_output(self, raw_bytes: bytes) -> str:
+        """Formatta i byte letti in tre righe: HEX / DEC / ASCII."""
+        hex_str   = "  ".join(f"{b:02X}" for b in raw_bytes)
+        dec_str   = "  ".join(f"{b:>3d}" for b in raw_bytes)
+        ascii_str = "   ".join(chr(b) if 32 <= b < 127 else "·" for b in raw_bytes)
+        return f"HEX:   {hex_str}\nDEC:   {dec_str}\nASCII: {ascii_str}"
+
     def create_left_widgets(self, frame):
-        # Frame per la scansione e connessione dispositivi
+        # ── Dispositivi Bluetooth ──────────────────────────────────────────────
         device_frame = ttk.LabelFrame(frame, text="Dispositivi Bluetooth")
-        device_frame.pack(fill="x", padx=10, pady=10)
+        device_frame.pack(fill="x", padx=PAD_LG, pady=PAD_LG)
 
         self.device_list = tk.Listbox(device_frame, height=6, width=40)
-        self.device_list.grid(row=0, column=0, padx=5, pady=5)
+        self.device_list.grid(row=0, column=0, padx=PAD_SM, pady=PAD_SM)
 
-        device_controls = tk.Frame(device_frame)
-        device_controls.grid(row=0, column=1, padx=5)
+        device_controls = ttk.Frame(device_frame)
+        device_controls.grid(row=0, column=1, padx=PAD, sticky="n")
 
-        self.refresh_button = ttk.Button(device_controls, text="Scansiona Dispositivi", command=self.search_devices)
-        self.refresh_button.grid(row=0, column=0, pady=5, sticky="ew")
+        self.refresh_button = ttk.Button(
+            device_controls, text="Scansiona", command=self.search_devices)
+        self.refresh_button.grid(row=0, column=0, pady=PAD_SM, sticky="ew")
 
-        self.connect_button = ttk.Button(device_controls, text="Connetti", command=self.connect_device)
-        self.connect_button.grid(row=1, column=0, pady=5, sticky="ew")
+        self.connect_button = ttk.Button(
+            device_controls, text="Connetti", command=self.connect_device)
+        self.connect_button.grid(row=1, column=0, pady=PAD_SM, sticky="ew")
 
-        self.disconnect_button = ttk.Button(device_controls, text="Disconnetti", command=self.disconnect_device)
-        self.disconnect_button.grid(row=2, column=0, pady=5, sticky="ew")
-        self.disconnect_button.config(state="disabled")
+        self.disconnect_button = ttk.Button(
+            device_controls, text="Disconnetti", command=self.disconnect_device,
+            state="disabled")
+        self.disconnect_button.grid(row=2, column=0, pady=PAD_SM, sticky="ew")
 
-        # Indicatore di stato connessione
+        # ── Stato connessione ──────────────────────────────────────────────────
         status_frame = ttk.LabelFrame(frame, text="Stato Connessione")
-        status_frame.pack(fill="x", padx=10, pady=5)
+        status_frame.pack(fill="x", padx=PAD_LG, pady=(0, PAD))
+        status_frame.columnconfigure(1, weight=1)
 
-        # Label di stato a sinistra
+        # Pallino colorato (verde=connesso, rosso=disconnesso)
+        self._dot = tk.Canvas(status_frame, width=14, height=14,
+                              highlightthickness=0)
+        self._dot_id = self._dot.create_oval(2, 2, 12, 12,
+                                             fill="red", outline="red")
+        self._dot.grid(row=0, column=0, rowspan=2,
+                       padx=(PAD, PAD_SM), pady=PAD_SM, sticky="n")
+
+        # Riga 1: testo stato bold
         self.status_label = ttk.Label(
-            status_frame, textvariable=self.connection_status, style="Status.TLabel", foreground="red"
-        )
-        self.status_label.pack(side="left", padx=5, pady=5, anchor="w")
+            status_frame, textvariable=self.connection_status,
+            style="Status.TLabel", foreground="red")
+        self.status_label.grid(row=0, column=1, sticky="w", pady=(PAD_SM, 0))
 
-        # Barra di progresso a destra
-        self.progress = ttk.Progressbar(  # Crea la barra di progresso
-            status_frame,
-            orient="horizontal",
-            mode="indeterminate",  # Modalità iniziale
-            length=150  # Lunghezza della barra
-        )
-        self.progress.pack(side="right", padx=5, pady=5, anchor="e")
-        self.progress["value"] = 0  # Imposta il valore iniziale a 0
+        # Riga 2: nome dispositivo + MAC (visibile solo quando connesso)
+        self.device_info_label = ttk.Label(
+            status_frame, textvariable=self.device_info,
+            font=("Helvetica", 9), foreground="gray")
+        self.device_info_label.grid(row=1, column=1, sticky="w",
+                                    pady=(0, PAD_SM))
 
-        # Lettura EEPROM
+        # Progress bar
+        self.progress = ttk.Progressbar(
+            status_frame, orient="horizontal",
+            mode="indeterminate", length=140)
+        self.progress.grid(row=0, column=2, rowspan=2,
+                           padx=PAD, pady=PAD_SM, sticky="e")
+
+        # ── Lettura EEPROM ─────────────────────────────────────────────────────
         read_frame = ttk.LabelFrame(frame, text="Lettura EEPROM")
-        read_frame.pack(fill="x", padx=10, pady=10)
+        read_frame.pack(fill="x", padx=PAD_LG, pady=(0, PAD))
+        read_frame.columnconfigure(1, weight=1)
 
-        ttk.Label(read_frame, text="Indirizzo EEPROM (es. 0x0016):").grid(row=0, column=0, padx=5, pady=2, sticky="w")
-        self.read_address_entry = ttk.Entry(read_frame, width=10)
-        self.read_address_entry.grid(row=0, column=1, padx=5, pady=5)
+        ttk.Label(read_frame, text="Indirizzo (es. 0x0016):").grid(
+            row=0, column=0, padx=PAD, pady=PAD_SM, sticky="w")
+        self.read_address_entry = ttk.Entry(read_frame, width=12)
+        self.read_address_entry.grid(row=0, column=1, padx=PAD_SM,
+                                     pady=PAD_SM, sticky="w")
 
-        ttk.Label(read_frame, text="Dimensione dati (es. 2):").grid(row=1, column=0, padx=5, pady=2, sticky="w")
-        self.data_size_entry = ttk.Entry(read_frame, width=10)
-        self.data_size_entry.grid(row=1, column=1, padx=5, pady=5)
+        ttk.Label(read_frame, text="Dimensione (byte):").grid(
+            row=1, column=0, padx=PAD, pady=PAD_SM, sticky="w")
+        self.data_size_entry = ttk.Entry(read_frame, width=6)
+        self.data_size_entry.grid(row=1, column=1, padx=PAD_SM,
+                                  pady=PAD_SM, sticky="w")
 
-        self.read_button = ttk.Button(read_frame, text="Leggi", command=self.on_read_button_pressed)
-        self.read_button.grid(row=0, column=2)
+        self.read_button = ttk.Button(
+            read_frame, text="Leggi", command=self.on_read_button_pressed)
+        self.read_button.grid(row=0, column=2, rowspan=2,
+                              padx=PAD_SM, pady=PAD_SM, sticky="ns")
 
-        ttk.Label(read_frame, text="Dati Letti:").grid(row=2, column=0, padx=5, pady=5, sticky="w")
-        self.data_output_label = ttk.Label(read_frame, textvariable=self.data_output, foreground="blue",
-                                           font=("Arial", 12), wraplength=200, anchor="w", justify="left" )
-        self.data_output_label.grid(row=2, column=1, columnspan=2, padx=5, pady=5, sticky="w")
+        # Output lettura: 3 righe HEX / DEC / ASCII
+        ttk.Label(read_frame, text="Risultato:").grid(
+            row=2, column=0, padx=PAD, pady=(PAD_SM, PAD), sticky="nw")
+        self.read_output_text = tk.Text(
+            read_frame, height=3, width=36,
+            font=("Courier New", 9), state="disabled",
+            relief="sunken", borderwidth=1)
+        self.read_output_text.grid(row=2, column=1, columnspan=2,
+                                   padx=PAD_SM, pady=(PAD_SM, PAD),
+                                   sticky="ew")
 
-        # Scrittura EEPROM
+        # ── Scrittura EEPROM ───────────────────────────────────────────────────
         write_frame = ttk.LabelFrame(frame, text="Scrittura EEPROM")
-        write_frame.pack(fill="x", padx=10, pady=10)
+        write_frame.pack(fill="x", padx=PAD_LG, pady=(0, PAD_LG))
+        write_frame.columnconfigure(1, weight=1)
 
-        ttk.Label(write_frame, text="Indirizzo EEPROM (es. 0x0016):").grid(row=0, column=0, padx=5, pady=2, sticky="w")
-        self.write_address_entry = ttk.Entry(write_frame, width=10)
-        self.write_address_entry.grid(row=0, column=1, padx=5, pady=5)
+        ttk.Label(write_frame, text="Indirizzo (es. 0x0016):").grid(
+            row=0, column=0, padx=PAD, pady=PAD_SM, sticky="w")
+        self.write_address_entry = ttk.Entry(write_frame, width=12)
+        self.write_address_entry.grid(row=0, column=1, padx=PAD_SM,
+                                      pady=PAD_SM, sticky="w")
 
-        ttk.Label(write_frame, text="Dati da scrivere (es. 03 66 36):").grid(row=1, column=0, padx=5, pady=2, sticky="w")
-        self.data_entry = ttk.Entry(write_frame, width=10)
-        self.data_entry.grid(row=1, column=1, padx=5, pady=5)
+        self.write_button = ttk.Button(
+            write_frame, text="Scrivi", command=self.write_data_manually)
+        self.write_button.grid(row=0, column=2, padx=PAD_SM,
+                               pady=PAD_SM, sticky="ew")
 
-        self.write_button = ttk.Button(write_frame, text="Scrivi", command=self.write_data_manually)
-        self.write_button.grid(row=0, column=2, pady=5)
+        ttk.Label(write_frame, text="Dati hex (es. 03 66 36):").grid(
+            row=1, column=0, padx=PAD, pady=PAD_SM, sticky="w")
+        # tk.Entry per poter impostare highlightcolor (validazione visuale)
+        self.data_entry = tk.Entry(
+            write_frame, width=28,
+            font=("Courier New", 10),
+            relief="sunken", borderwidth=1,
+            highlightthickness=2,
+            highlightbackground="gray", highlightcolor="gray",
+            insertbackground="black")
+        self.data_entry.grid(row=1, column=1, columnspan=2,
+                             padx=PAD_SM, pady=PAD_SM, sticky="ew")
+        self.data_entry.bind(
+            "<KeyRelease>",
+            lambda e: self._validate_hex_input(self.data_entry, e))
 
     def create_right_widgets(self, frame):
-        # Frame per parametri
+        # ── Tabella parametri ──────────────────────────────────────────────────
         param_frame = ttk.LabelFrame(frame, text="Parametri")
-        param_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        param_frame.pack(fill="both", expand=True, padx=PAD_LG, pady=PAD_LG)
         param_frame.grid_rowconfigure(0, weight=1)
         param_frame.grid_columnconfigure(0, weight=1)
 
-        # Treeview con 5 colonne: Nome, Indirizzo, Tipo, Valori da Scrivere, Valori Letti
-        self.tree = ttk.Treeview(param_frame, columns=("Nome", "Indirizzo", "Tipo", "Da Scrivere", "Letti"), show="headings", height=20)
-        self.tree.heading("Nome", text="Nome Parametro")
-        self.tree.heading("Indirizzo", text="Indirizzo (hex)")
-        self.tree.heading("Tipo", text="Tipo Dato")
-        self.tree.heading("Da Scrivere", text="Valori da Scrivere")
-        self.tree.heading("Letti", text="Valori Letti")
-        self.tree.column("Nome", width=150)
-        self.tree.column("Indirizzo", width=100)
-        self.tree.column("Tipo", width=100)
-        self.tree.column("Da Scrivere", width=100)
-        self.tree.column("Letti", width=100)
+        self.tree = ttk.Treeview(
+            param_frame,
+            columns=("Nome", "Indirizzo", "Tipo", "Da Scrivere", "Letti"),
+            show="headings", height=20)
+        self.tree.heading("Nome",        text="Nome Parametro")
+        self.tree.heading("Indirizzo",   text="Indirizzo")
+        self.tree.heading("Tipo",        text="Tipo")
+        self.tree.heading("Da Scrivere", text="Da Scrivere")
+        self.tree.heading("Letti",       text="Letti")
+        self.tree.column("Nome",        width=160, minwidth=100, stretch=True)
+        self.tree.column("Indirizzo",   width=80,  minwidth=60,  stretch=False, anchor="center")
+        self.tree.column("Tipo",        width=75,  minwidth=55,  stretch=False, anchor="center")
+        self.tree.column("Da Scrivere", width=100, minwidth=80,  stretch=True,  anchor="center")
+        self.tree.column("Letti",       width=100, minwidth=80,  stretch=True,  anchor="center")
         self.tree.grid(row=0, column=0, sticky="nsew")
 
-        # Configura tag per colori alternati
-        self.tree.tag_configure('oddrow', background='lightgrey')
-        self.tree.tag_configure('evenrow', background='white')
+        self.tree.tag_configure("oddrow",   background="lightgrey")
+        self.tree.tag_configure("evenrow",  background="white")
+        self.tree.tag_configure("mismatch", background="#FEF3C7")  # giallo chiaro
 
-        # Scrollbar verticale
         scrollbar = ttk.Scrollbar(param_frame, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=scrollbar.set)
         scrollbar.grid(row=0, column=1, sticky="ns")
 
-        # Carica parametri dal file di configurazione
         self.load_config_parameters()
 
-        # Frame per pulsanti
+        # ── Barra pulsanti ─────────────────────────────────────────────────────
         buttons_frame = ttk.Frame(frame)
-        buttons_frame.pack(fill="x", padx=10, pady=5)
+        buttons_frame.pack(fill="x", padx=PAD_LG, pady=(0, PAD))
 
-        self.carica_btn = ttk.Button(buttons_frame, text="Carica Parametri", command=self.load_new_config)
-        self.carica_btn.pack(side="left", padx=5)
+        # Azioni safe – sinistra
+        self.carica_btn = ttk.Button(
+            buttons_frame, text="Carica Parametri", command=self.load_new_config)
+        self.carica_btn.pack(side="left", padx=(0, PAD_SM))
 
-        self.leggi_btn = ttk.Button(buttons_frame, text="Leggi Parametri", command=self.scarica_parametri)
-        self.leggi_btn.pack(side="left", padx=5)
+        self.leggi_btn = ttk.Button(
+            buttons_frame, text="Leggi Parametri", command=self.scarica_parametri)
+        self.leggi_btn.pack(side="left", padx=(0, PAD_SM))
 
-        self.scrivi_btn = ttk.Button(buttons_frame, text="Scrivi Parametri", command=self.scrivi_parametri)
-        self.scrivi_btn.pack(side="left", padx=5)
+        self.verifica_btn = ttk.Button(
+            buttons_frame, text="Leggi e Verifica", command=self.lettura_e_verifica)
+        self.verifica_btn.pack(side="left", padx=(0, PAD_SM))
 
-        self.verifica_btn = ttk.Button(buttons_frame, text="Lettura e Verifica", command=self.lettura_e_verifica)
-        self.verifica_btn.pack(side="left", padx=5)
+        self.salva_btn = ttk.Button(
+            buttons_frame, text="Salva come CSV", command=self.save_as_csv)
+        self.salva_btn.pack(side="left", padx=(0, PAD_SM))
 
-        self.salva_btn = ttk.Button(buttons_frame, text="Salva come CSV", command=self.save_as_csv)
-        self.salva_btn.pack(side="left", padx=5)
+        # Azione distruttiva – destra, visivamente separata
+        self.scrivi_btn = ttk.Button(
+            buttons_frame, text="⚠  Scrivi Parametri", command=self.scrivi_parametri)
+        self.scrivi_btn.pack(side="right")
 
     def load_config_parameters(self, config_file="config.csv"):
         # Pulisci la Treeview
@@ -433,6 +522,11 @@ class BluetoothApp:
         children = list(self.tree.get_children())
         if not children:
             return
+
+        # Rimuove highlight mismatch dalla sessione precedente
+        for item in children:
+            tags = [t for t in self.tree.item(item, "tags") if t != "mismatch"]
+            self.tree.item(item, tags=tags)
 
         # Raccoglie (item_id, name, address_str, data_type) da tutti i parametri
         raw_params = [
@@ -613,6 +707,9 @@ class BluetoothApp:
             letti_norm = str(letti).replace(',', '.')
             if to_write_norm != letti_norm:
                 errors.append(name)
+                tags = [t for t in self.tree.item(item, "tags")
+                        if t not in ("oddrow", "evenrow", "mismatch")]
+                self.tree.item(item, tags=tags + ["mismatch"])
 
         self.root.after(0, lambda: self.progress.config(mode='indeterminate'))
         if errors:
@@ -747,14 +844,16 @@ class BluetoothApp:
         if not selected_device:
             return
         try:
-            address = selected_device.split(" - ")[1]
+            parts = selected_device.split(" - ")
+            dev_name = parts[0].strip()
+            address  = parts[1].strip()
         except Exception:
             self.log.error("Formato voce lista dispositivi inatteso: impossibile estrarre l'indirizzo MAC.")
             return
         self.progress.start()
-        self.executor.submit(self._connect_device, address)
+        self.executor.submit(self._connect_device, address, dev_name)
 
-    def _connect_device(self, address):
+    def _connect_device(self, address, dev_name=""):
         self.log.info(f"Tentativo di connessione a {address}...")
         fut = asyncio.run_coroutine_threadsafe(
             self.ble_manager.connect_to_device(address, connection_timeout=15.0),
@@ -762,20 +861,21 @@ class BluetoothApp:
         )
         try:
             fut.result()
-            self.root.after(0, self.on_device_connected, address)
+            self.root.after(0, self.on_device_connected, address, dev_name)
         except Exception as e:
             self.log.error(f"Errore durante la connessione BLE: {e}")
+            self.root.after(0, self._set_connection_status, False)
         finally:
             self.root.after(0, self.progress.stop)
 
-    def on_device_connected(self, addr):
+    def on_device_connected(self, addr, dev_name=""):
         """Aggiorna l'interfaccia dopo una connessione riuscita."""
         self.log.info(f"Connesso con successo a {addr}")
-        self.connection_status.set("Connesso")
-        self.status_label.config(foreground="green")  # Cambia colore stato
-        self.connect_button.config(state="disabled")  # Disabilita il bottone di connessione
-        self.disconnect_button.config(state="normal")  # Abilita il bottone di disconnessione
-        self.monitor_connection()  # Avvia il monitoraggio della connessione
+        self._set_connection_status(True)
+        self.device_info.set(f"{dev_name}   |   {addr}" if dev_name else addr)
+        self.connect_button.config(state="disabled")
+        self.disconnect_button.config(state="normal")
+        self.monitor_connection()
 
     def disconnect_device(self):
         """Disconnette il dispositivo BLE in modo asincrono e aggiorna la GUI."""
@@ -799,8 +899,7 @@ class BluetoothApp:
     def on_disconnect_success(self):
         """Callback per gestire una disconnessione completata con successo."""
         self.log.info("Disconnessione completata.")
-        self.connection_status.set("Disconnesso")
-        self.status_label.config(foreground="red")
+        self._set_connection_status(False)
         self.connect_button.config(state="normal")
         self.disconnect_button.config(state="disabled")
         messagebox.showinfo("Disconnessione", "Dispositivo disconnesso correttamente.")
@@ -825,9 +924,8 @@ class BluetoothApp:
     def handle_disconnection(self):
         """Gestisce la disconnessione del dispositivo."""
         self.ble_manager.reset_connection_state()
-        self.connection_status.set("Disconnesso")
+        self._set_connection_status(False)
         self.log.warning("Connessione BLE persa inaspettatamente.")
-        self.status_label.config(foreground="red")
         self.connect_button.config(state="normal")
         self.disconnect_button.config(state="disabled")
         #self.log_message("Tentativo di riconnessione...")
@@ -838,8 +936,7 @@ class BluetoothApp:
         try:
             self.connect_device()
             if self.ble_manager.get_connection_status():
-                self.connection_status.set("Connesso")
-                self.status_label.config(foreground="green")
+                self._set_connection_status(True)
                 self.log.info("Riconnessione riuscita.")
             else:
                 self.log.error("Tentativo di riconnessione fallito.")
@@ -937,21 +1034,29 @@ class BluetoothApp:
             return
 
         self.connection_status.set("Lettura in corso...")
-        self.status_label.config(foreground="orange")
-        self.root.update()  # Aggiorna la GUI
+        self.status_label.config(foreground="darkorange")
+        self._dot.itemconfig(self._dot_id, fill="darkorange", outline="darkorange")
+        self.root.update()
 
         # Avvia la lettura
         output = await self.read_data(address, size)
-        self.status_label.config(foreground="green")
         if output:
-            self.data_output.set(' '.join(f'{b:02x}' for b in output))
-            self.connection_status.set("Lettura completata")
+            self._set_connection_status(True, "Lettura completata")
+            self.root.after(0, self._update_read_output,
+                           self._format_read_output(output))
         else:
-            self.connection_status.set("Errore durante la lettura")
+            self._set_connection_status(False, "Errore lettura")
 
     def on_read_button_pressed(self):
         """Callback associata al pulsante per avviare la lettura."""
         asyncio.run_coroutine_threadsafe(self.read_data_manually(), self._ble_loop)
+
+    def _update_read_output(self, text: str):
+        """Aggiorna il Text widget di output lettura (thread-safe)."""
+        self.read_output_text.configure(state="normal")
+        self.read_output_text.delete("1.0", "end")
+        self.read_output_text.insert("1.0", text)
+        self.read_output_text.configure(state="disabled")
 
     def write_data_manually(self):
         """
