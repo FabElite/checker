@@ -135,9 +135,16 @@ class BluetoothApp:
         logging.getLogger().addHandler(tk_handler)
 
     def create_widgets(self):
-        # PanedWindow per dividere l'interfaccia in due sezioni
-        paned_window = ttk.PanedWindow(self.root, orient="horizontal")
-        paned_window.pack(fill="both", expand=True)
+        # Frame principale verticale
+        main_frame = ttk.Frame(self.root)
+        main_frame.pack(fill="both", expand=True)
+        main_frame.rowconfigure(0, weight=1)
+        main_frame.rowconfigure(1, weight=0)
+        main_frame.columnconfigure(0, weight=1)
+
+        # PanedWindow nella parte superiore
+        paned_window = ttk.PanedWindow(main_frame, orient="horizontal")
+        paned_window.grid(row=0, column=0, sticky="nsew")
 
         # Frame sinistro (controlli)
         left_frame = ttk.Frame(paned_window)
@@ -152,6 +159,25 @@ class BluetoothApp:
 
         # Contenuti del frame destro
         self.create_right_widgets(right_frame)
+
+        # Log attività in basso a tutta larghezza
+        log_frame = ttk.LabelFrame(main_frame, text="Log Attività")
+        log_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 10))
+        log_frame.columnconfigure(0, weight=1)
+
+        self.log_text = tk.Text(log_frame, height=7, state="disabled", wrap="none")
+        self.log_text.grid(row=0, column=0, sticky="ew", padx=5, pady=(5, 0))
+
+        scrollbar_v = ttk.Scrollbar(log_frame, orient="vertical", command=self.log_text.yview)
+        scrollbar_v.grid(row=0, column=1, sticky="ns", pady=(5, 0))
+
+        scrollbar_h = ttk.Scrollbar(log_frame, orient="horizontal", command=self.log_text.xview)
+        scrollbar_h.grid(row=1, column=0, sticky="ew", padx=5, pady=(0, 5))
+
+        self.log_text.configure(yscrollcommand=scrollbar_v.set, xscrollcommand=scrollbar_h.set)
+
+        # Collega il TkTextHandler ora che il widget è pronto
+        self._attach_ui_logging(self.log_text)
 
     def create_left_widgets(self, frame):
         # Frame per la scansione e connessione dispositivi
@@ -228,16 +254,6 @@ class BluetoothApp:
 
         self.write_button = ttk.Button(write_frame, text="Scrivi", command=self.write_data_manually)
         self.write_button.grid(row=0, column=2, pady=5)
-
-        # Log attività
-        log_frame = ttk.LabelFrame(frame, text="Log Attività")
-        log_frame.pack(fill="both", padx=10, pady=10, expand=True)
-
-        self.log_text = tk.Text(log_frame, height=8, width=50, state="disabled", wrap="word")
-        self.log_text.pack(fill="both", padx=5, pady=5, expand=True)
-
-        # Collega il TkTextHandler ora che il widget è pronto
-        self._attach_ui_logging(self.log_text)
 
     def create_right_widgets(self, frame):
         # Frame per parametri
