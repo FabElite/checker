@@ -653,6 +653,7 @@ class BluetoothApp:
 
     def handle_disconnection(self):
         """Gestisce la disconnessione del dispositivo."""
+        self.ble_manager.reset_connection_state()
         self.connection_status.set("Disconnesso")
         self.log_message("Connessione persa.")
         self.status_label.config(foreground="red")
