@@ -542,10 +542,18 @@ class BluetoothApp:
     def prepare_data_for_write(self, value_str, data_type):
         try:
             data_type = data_type.upper()
+            value_str = str(value_str).strip()
 
             if data_type.endswith('H'):
-                # Interpreta come esadecimale (es. "03 66 36")
-                return bytearray.fromhex(value_str)
+                # Rimuove gli spazi interni (es. "03 66" -> "0366") perché fromhex
+                # può essere schizzinoso con gli spazi a seconda della versione di Python
+                clean_hex = value_str.replace(" ", "")
+
+                # Se la stringa ha un numero dispari di caratteri (es. "A"), aggiunge uno zero (es. "0A")
+                if len(clean_hex) % 2 != 0:
+                    clean_hex = "0" + clean_hex
+
+                return bytearray.fromhex(clean_hex)
 
             # Gestione STRING
             if data_type.startswith('STRING'):
