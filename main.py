@@ -14,6 +14,11 @@ LOG_FILENAME = "app.log"
 LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
+# Parametri per la lettura a blocchi
+READ_MAX_GAP       = 8    # byte: gap massimo tollerato tra due parametri per unirli nello stesso chunk
+READ_MAX_CHUNK     = 128  # byte: dimensione massima di un singolo chunk di lettura
+READ_RETRIES       = 3    # Numero di tentativi in caso di fallimento
+
 
 class TkTextHandler(logging.Handler):
     """
@@ -364,31 +369,118 @@ class BluetoothApp:
         self.progress['value'] = 0
         asyncio.run_coroutine_threadsafe(self._scarica_parametri_async(), self._ble_loop)
 
-    async def _scarica_parametri_async(self):
-        children = list(self.tree.get_children())
-        total = len(children)
-        if total == 0:
-            return
+    def _build_read_chunks(self, params):
+        """
+        Raggruppa i parametri in chunk di lettura contigui o quasi-contigui.
 
-        for idx, item in enumerate(children):
-            values = self.tree.item(item)['values']
-            name, address_str, data_type, _, _ = values
+        Ogni parametro è una tupla: (item_id, name, address, size, data_type).
+        Restituisce una lista di chunk, ciascuno nella forma:
+            {
+                'start':  indirizzo di inizio del chunk,
+                'size':   numero totale di byte da leggere,
+                'params': [(item_id, name, address, size, data_type), ...]
+            }
+
+        Regole di raggruppamento:
+          - Due parametri consecutivi (per indirizzo) vengono uniti se il gap tra loro
+            è <= READ_MAX_GAP byte. I byte di gap vengono letti ma ignorati.
+          - Un chunk viene chiuso e ne viene aperto uno nuovo se aggiungere il parametro
+            successivo farebbe superare READ_MAX_CHUNK byte.
+          - Parametri con indirizzo o size non validi vengono scartati con un log di errore.
+        """
+        # Scarta i parametri non validi e ordina per indirizzo
+        valid = []
+        for item_id, name, address_str, data_type in params:
             try:
                 address = int(address_str, 16)
-                size = self.get_size_from_type(data_type)
-            except ValueError:
-                self.log.error(f"Indirizzo o tipo non valido per '{name}'")
-                continue
+                size    = self.get_size_from_type(data_type)
+                valid.append((item_id, name, address, size, data_type))
+            except (ValueError, KeyError):
+                self.log.error(f"Parametro '{name}' scartato: indirizzo o tipo non valido.")
 
-            data = await self.read_data(address, size)
-            if data is not None:
-                value = self.interpret_data(data, data_type)
-                self.root.after(0, lambda it=item, val=value: self.tree.set(it, column="Letti", value=val))
+        valid.sort(key=lambda p: p[2])  # ordina per address
+
+        chunks = []
+        current = None
+
+        for param in valid:
+            item_id, name, address, size, data_type = param
+
+            if current is None:
+                # Primo parametro: apri il primo chunk
+                current = {'start': address, 'size': size, 'params': [param]}
             else:
-                self.root.after(0, lambda it=item: self.tree.set(it, column="Letti", value="N/A"))
+                chunk_end  = current['start'] + current['size']  # byte successivo all'ultimo letto
+                gap        = address - chunk_end                  # byte tra fine chunk e inizio parametro
+                new_size   = (address + size) - current['start'] # dimensione chunk se aggiungessimo questo param
 
-            progress = ((idx + 1) / total) * 100
-            self.root.after(0, lambda p=progress: self.update_progress_bar(p))
+                if gap <= READ_MAX_GAP and new_size <= READ_MAX_CHUNK:
+                    # Il parametro rientra nel chunk corrente (con eventuale gap tollerato)
+                    current['size'] = new_size
+                    current['params'].append(param)
+                else:
+                    # Chiudi il chunk corrente e aprine uno nuovo
+                    chunks.append(current)
+                    current = {'start': address, 'size': size, 'params': [param]}
+
+        if current is not None:
+            chunks.append(current)
+
+        return chunks
+
+    async def _scarica_parametri_async(self):
+        children = list(self.tree.get_children())
+        if not children:
+            return
+
+        # Raccoglie (item_id, name, address_str, data_type) da tutti i parametri
+        raw_params = [
+            (item, self.tree.item(item)['values'][0],   # name
+                   self.tree.item(item)['values'][1],   # address_str
+                   self.tree.item(item)['values'][2])   # data_type
+            for item in children
+        ]
+
+        chunks = self._build_read_chunks(raw_params)
+        total_params = sum(len(c['params']) for c in chunks)
+        done = 0
+
+        self.log.info(
+            f"Lettura ottimizzata: {total_params} parametri raggruppati in {len(chunks)} chunk."
+        )
+
+        for chunk in chunks:
+            chunk_start = chunk['start']
+            chunk_size  = chunk['size']
+
+            self.log.debug(
+                f"Chunk 0x{chunk_start:04X} | {chunk_size} byte | "
+                f"{len(chunk['params'])} parametri"
+            )
+
+            # Lettura dell'intero chunk
+            chunk_data = await self.read_data(chunk_start, chunk_size)
+
+            for item_id, name, address, size, data_type in chunk['params']:
+                if chunk_data is not None:
+                    offset = address - chunk_start
+                    param_bytes = chunk_data[offset: offset + size]
+                    if len(param_bytes) == size:
+                        value = self.interpret_data(param_bytes, data_type)
+                    else:
+                        self.log.error(
+                            f"'{name}': byte estratti ({len(param_bytes)}) != attesi ({size})."
+                        )
+                        value = "N/A"
+                else:
+                    self.log.error(f"'{name}': lettura chunk fallita.")
+                    value = "N/A"
+
+                self.root.after(0, lambda it=item_id, v=value: self.tree.set(it, column="Letti", value=v))
+
+                done += 1
+                progress = (done / total_params) * 100
+                self.root.after(0, lambda p=progress: self.update_progress_bar(p))
 
         self.root.after(0, lambda: self.progress.config(mode='indeterminate'))
         self.log.info("Scaricamento parametri completato.")
@@ -748,24 +840,57 @@ class BluetoothApp:
             self.root.after(10000, self.reconnect_device)
 
     async def read_data(self, address, size, timeout=5):
-        """Legge i dati BLE in modo asincrono utilizzando il loop di AsyncioWorker."""
-        try:
-            # Avvia la lettura dati con timeout
-            data = await asyncio.wait_for(
-                self.ble_manager.read_eeprom(address, size),
-                timeout=timeout
-            )
-            if data and len(data) > 5:
-                return data[5:]
-            else:
-                self.log.error("Dati ricevuti non validi o troppo corti.")
-                return None
-        except asyncio.TimeoutError:
-            self.log.error(f"Timeout lettura EEPROM dopo {timeout}s.")
-            return None
-        except Exception as e:
-            self.log.error(f"Errore imprevisto durante la lettura: {e}")
-            return None
+        """
+        Legge i dati BLE gestendo la segmentazione (se size > READ_MAX_CHUNK)
+        e i tentativi di retry in caso di errore.
+        """
+        full_data = bytearray()
+        bytes_read = 0
+
+        while bytes_read < size:
+            # Calcola la dimensione del prossimo segmento
+            chunk_to_read = min(size - bytes_read, READ_MAX_CHUNK)
+            current_addr = address + bytes_read
+
+            chunk_success = False
+            for attempt in range(READ_RETRIES):
+                try:
+                    self.log.debug(f"Lettura 0x{current_addr:04X} ({chunk_to_read}b) - Tentativo {attempt + 1}")
+
+                    # Chiamata al manager BLE
+                    data = await asyncio.wait_for(
+                        self.ble_manager.read_eeprom(current_addr, chunk_to_read),
+                        timeout=timeout
+                    )
+
+                    # Verifica validità pacchetto (header di 5 byte tipico del tuo protocollo)
+                    if data and len(data) >= 5:
+                        # Estrai i dati utili (saltando l'header)
+                        payload = data[5:]
+                        if len(payload) >= chunk_to_read:
+                            full_data.extend(payload[:chunk_to_read])
+                            chunk_success = True
+                            break  # Successo: esce dal loop di retry
+                        else:
+                            self.log.warning(f"Payload corto ricevuto a 0x{current_addr:04X}")
+                    else:
+                        self.log.warning(f"Risposta non valida o nulla a 0x{current_addr:04X}")
+
+                except asyncio.TimeoutError:
+                    self.log.warning(f"Timeout al tentativo {attempt + 1} per 0x{current_addr:04X}")
+                except Exception as e:
+                    self.log.error(f"Errore imprevisto al tentativo {attempt + 1}: {e}")
+
+                # Breve attesa prima del prossimo tentativo (backoff)
+                await asyncio.sleep(0.2)
+
+            if not chunk_success:
+                self.log.error(f"Fallimento definitivo dopo {READ_RETRIES} tentativi a 0x{current_addr:04X}")
+                return None  # Abortisce l'intera lettura se un segmento fallisce
+
+            bytes_read += chunk_to_read
+
+        return full_data
 
     async def read_data_manually(self):
         try:
