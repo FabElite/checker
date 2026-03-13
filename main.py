@@ -5,6 +5,7 @@ import threading
 import logging
 import logging.handlers
 from shared_lib.bluetooth_manager import BLEManager
+from bleak import BleakError
 from concurrent.futures import ThreadPoolExecutor
 import csv
 import struct
@@ -843,50 +844,77 @@ class BluetoothApp:
         """
         Legge i dati BLE gestendo la segmentazione (se size > READ_MAX_CHUNK)
         e i tentativi di retry in caso di errore.
+
+        Distingue tra errori transitori (timeout, payload corto) per cui ha
+        senso riprovare, ed errori fatali (BleakError, connessione caduta) per
+        cui il retry è inutile e si abbandona subito.
         """
         full_data = bytearray()
         bytes_read = 0
 
         while bytes_read < size:
-            # Calcola la dimensione del prossimo segmento
             chunk_to_read = min(size - bytes_read, READ_MAX_CHUNK)
-            current_addr = address + bytes_read
+            current_addr  = address + bytes_read
 
             chunk_success = False
             for attempt in range(READ_RETRIES):
                 try:
-                    self.log.debug(f"Lettura 0x{current_addr:04X} ({chunk_to_read}b) - Tentativo {attempt + 1}")
+                    self.log.debug(
+                        f"Lettura 0x{current_addr:04X} ({chunk_to_read}b)"
+                        f" - Tentativo {attempt + 1}/{READ_RETRIES}"
+                    )
 
-                    # Chiamata al manager BLE
                     data = await asyncio.wait_for(
                         self.ble_manager.read_eeprom(current_addr, chunk_to_read),
                         timeout=timeout
                     )
 
-                    # Verifica validità pacchetto (header di 5 byte tipico del tuo protocollo)
                     if data and len(data) >= 5:
-                        # Estrai i dati utili (saltando l'header)
                         payload = data[5:]
                         if len(payload) >= chunk_to_read:
                             full_data.extend(payload[:chunk_to_read])
                             chunk_success = True
-                            break  # Successo: esce dal loop di retry
+                            break  # successo, esci dal retry
                         else:
-                            self.log.warning(f"Payload corto ricevuto a 0x{current_addr:04X}")
+                            # Payload corto: errore transitorio, si riprova
+                            self.log.warning(
+                                f"Payload corto a 0x{current_addr:04X}: "
+                                f"ricevuti {len(payload)}b, attesi {chunk_to_read}b"
+                            )
                     else:
+                        # Risposta nulla o troppo corta: errore transitorio
                         self.log.warning(f"Risposta non valida o nulla a 0x{current_addr:04X}")
 
                 except asyncio.TimeoutError:
-                    self.log.warning(f"Timeout al tentativo {attempt + 1} per 0x{current_addr:04X}")
-                except Exception as e:
-                    self.log.error(f"Errore imprevisto al tentativo {attempt + 1}: {e}")
+                    # Errore transitorio: il dispositivo non ha risposto in tempo
+                    self.log.warning(
+                        f"Timeout al tentativo {attempt + 1}/{READ_RETRIES}"
+                        f" per 0x{current_addr:04X}"
+                    )
 
-                # Breve attesa prima del prossimo tentativo (backoff)
+                except BleakError as e:
+                    # Errore fatale BLE (connessione caduta, caratteristica non trovata, ecc.)
+                    # Riprovare non ha senso: si abbandona immediatamente
+                    self.log.error(
+                        f"Errore BLE fatale a 0x{current_addr:04X}: {e} — lettura abortita"
+                    )
+                    return None
+
+                except Exception as e:
+                    # Errore inatteso: loggato come fatale, si abbandona
+                    self.log.error(
+                        f"Errore imprevisto a 0x{current_addr:04X}: {e} — lettura abortita"
+                    )
+                    return None
+
+                # Backoff solo per errori transitori (timeout / payload corto)
                 await asyncio.sleep(0.2)
 
             if not chunk_success:
-                self.log.error(f"Fallimento definitivo dopo {READ_RETRIES} tentativi a 0x{current_addr:04X}")
-                return None  # Abortisce l'intera lettura se un segmento fallisce
+                self.log.error(
+                    f"Fallimento definitivo dopo {READ_RETRIES} tentativi a 0x{current_addr:04X}"
+                )
+                return None
 
             bytes_read += chunk_to_read
 
