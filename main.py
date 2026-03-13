@@ -2,11 +2,56 @@ import tkinter as tk
 from tkinter import messagebox, ttk, filedialog
 import asyncio
 import threading
+import logging
+import logging.handlers
 from shared_lib.bluetooth_manager import BLEManager
 from concurrent.futures import ThreadPoolExecutor
 import csv
 import struct
 import re
+
+LOG_FILENAME = "app.log"
+LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+
+class TkTextHandler(logging.Handler):
+    """
+    Handler di logging che scrive i messaggi nel widget Text di Tkinter.
+    Thread-safe: usa root.after() per aggiornare la GUI dal thread corretto.
+    """
+    LEVEL_TAGS = {
+        logging.DEBUG:    "debug",
+        logging.INFO:     "info",
+        logging.WARNING:  "warning",
+        logging.ERROR:    "error",
+        logging.CRITICAL: "critical",
+    }
+
+    def __init__(self, text_widget):
+        super().__init__()
+        self.text_widget = text_widget
+        # Configura i tag colore nel widget
+        text_widget.tag_configure("debug",    foreground="gray")
+        text_widget.tag_configure("info",     foreground="black")
+        text_widget.tag_configure("warning",  foreground="darkorange")
+        text_widget.tag_configure("error",    foreground="red")
+        text_widget.tag_configure("critical", foreground="red", font=("Helvetica", 10, "bold"))
+
+    def emit(self, record):
+        msg = self.format(record)
+        tag = self.LEVEL_TAGS.get(record.levelno, "info")
+
+        def _append():
+            try:
+                self.text_widget.configure(state="normal")
+                self.text_widget.insert("end", msg + "\n", tag)
+                self.text_widget.see("end")
+            finally:
+                self.text_widget.configure(state="disabled")
+
+        # Schedula l'aggiornamento nel thread principale di Tkinter
+        self.text_widget.after(0, _append)
 
 def setup_style():
     """
@@ -56,10 +101,38 @@ class BluetoothApp:
         self.data_output = tk.StringVar(value="")
         self.is_scanning = False
 
+        # Configura il logger (file handler subito, TkTextHandler dopo create_widgets)
+        self._setup_file_logging()
+
         # Configura gli stili e crea i widget
         setup_style()
         self.create_widgets()
 
+
+    def _setup_file_logging(self):
+        """Configura il root logger con handler su file rotativo."""
+        formatter = logging.Formatter(LOG_FORMAT, datefmt=LOG_DATE_FORMAT)
+
+        file_handler = logging.handlers.RotatingFileHandler(
+            LOG_FILENAME, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
+        )
+        file_handler.setFormatter(formatter)
+        file_handler.setLevel(logging.DEBUG)
+
+        root_logger = logging.getLogger()
+        root_logger.setLevel(logging.DEBUG)
+        root_logger.addHandler(file_handler)
+
+        self.log = logging.getLogger(__name__)
+        self.log.info("Applicazione avviata.")
+
+    def _attach_ui_logging(self, text_widget):
+        """Aggiunge il TkTextHandler al root logger dopo che il widget è pronto."""
+        formatter = logging.Formatter("%(asctime)s  %(levelname)-8s  %(message)s", datefmt="%H:%M:%S")
+        tk_handler = TkTextHandler(text_widget)
+        tk_handler.setFormatter(formatter)
+        tk_handler.setLevel(logging.INFO)
+        logging.getLogger().addHandler(tk_handler)
 
     def create_widgets(self):
         # PanedWindow per dividere l'interfaccia in due sezioni
@@ -163,6 +236,9 @@ class BluetoothApp:
         self.log_text = tk.Text(log_frame, height=8, width=50, state="disabled", wrap="word")
         self.log_text.pack(fill="both", padx=5, pady=5, expand=True)
 
+        # Collega il TkTextHandler ora che il widget è pronto
+        self._attach_ui_logging(self.log_text)
+
     def create_right_widgets(self, frame):
         # Frame per parametri
         param_frame = ttk.LabelFrame(frame, text="Parametri")
@@ -239,7 +315,7 @@ class BluetoothApp:
                             # Riformatta con virgola e rimuovi zeri finali
                             to_write = f"{parsed_val:.10f}".replace('.', ',').rstrip('0').rstrip(',')
                         except ValueError:
-                            self.log_message(f"Valore non valido in 'Da Scrivere' per {name}: {to_write}", level="error")
+                            self.log.error(f"Valore non valido in 'Da Scrivere' per {name}: {to_write}")
                     tag = 'oddrow' if idx % 2 == 0 else 'evenrow'
                     self.tree.insert("", "end", values=(
                         name,
@@ -249,25 +325,25 @@ class BluetoothApp:
                         "0"
                     ), tags=(tag,))
         except FileNotFoundError:
-            self.log_message(f"File di configurazione {config_file} non trovato. Usa valori di default.")
+            self.log.warning(f"File di configurazione '{config_file}' non trovato. Carico valori di default.")
             for i in range(100):
                 tag = 'oddrow' if i % 2 == 0 else 'evenrow'
                 self.tree.insert("", "end", values=(f"Parametro {i+1}", "0x0000", "uint8", "", "0"), tags=(tag,))
         except csv.Error:
-            self.log_message(f"Errore nel parsing del file {config_file}.")
+            self.log.error(f"Errore nel parsing del file '{config_file}'.")
 
     def load_new_config(self):
         file_path = filedialog.askopenfilename(filetypes=[("CSV files", "*.csv")])
         if file_path:
             self.load_config_parameters(file_path)
-            self.log_message(f"Caricato nuovo file di configurazione: {file_path}")
+            self.log.info(f"Caricato nuovo file di configurazione: {file_path}")
 
     def scarica_parametri(self):
         if not self.ble_manager.get_connection_status():
             messagebox.showerror("Errore", "Connetti un dispositivo prima di scaricare i parametri.")
             return
 
-        self.log_message("Inizio scaricamento parametri...")
+        self.log.info("Inizio scaricamento parametri...")
         self.progress.config(mode='determinate')
         self.progress['value'] = 0
         asyncio.run_coroutine_threadsafe(self._scarica_parametri_async(), self._ble_loop)
@@ -285,7 +361,7 @@ class BluetoothApp:
                 address = int(address_str, 16)
                 size = self.get_size_from_type(data_type)
             except ValueError:
-                self.log_message(f"Errore: Indirizzo o tipo non valido per {name}", level="error")
+                self.log.error(f"Indirizzo o tipo non valido per '{name}'")
                 continue
 
             data = await self.read_data(address, size)
@@ -299,14 +375,14 @@ class BluetoothApp:
             self.root.after(0, lambda p=progress: self.update_progress_bar(p))
 
         self.root.after(0, lambda: self.progress.config(mode='indeterminate'))
-        self.log_message("Scaricamento parametri completato.")
+        self.log.info("Scaricamento parametri completato.")
 
     def scrivi_parametri(self):
         if not self.ble_manager.get_connection_status():
             messagebox.showerror("Errore", "Connetti un dispositivo prima di scrivere i parametri.")
             return
 
-        self.log_message("Inizio scrittura parametri...")
+        self.log.info("Inizio scrittura parametri...")
         self.progress.config(mode='determinate')
         self.progress['value'] = 0
         asyncio.run_coroutine_threadsafe(self._scrivi_parametri_async(), self._ble_loop)
@@ -322,23 +398,23 @@ class BluetoothApp:
             values = self.tree.item(item)['values']
             name, address_str, data_type, to_write, _ = values
             if not to_write:
-                self.log_message(f"Salto {name}: nessun valore da scrivere.", level="info")
+                self.log.debug(f"Salto '{name}': nessun valore da scrivere.")
                 continue
             try:
                 address = int(address_str, 16)
                 data = self.prepare_data_for_write(to_write, data_type)
                 if data is None:
-                    self.log_message(f"Errore: Impossibile preparare dati per {name}", level="error")
+                    self.log.error(f"Impossibile preparare i dati per '{name}'")
                     errors.append(name)
                     continue
                 success = await self.write_data(address, data)
                 if success:
-                    self.log_message(f"Scritto {name} con successo.")
+                    self.log.info(f"'{name}' scritto con successo.")
                 else:
-                    self.log_message(f"Errore nella scrittura di {name}", level="error")
+                    self.log.error(f"Scrittura fallita per '{name}'")
                     errors.append(name)
             except ValueError:
-                self.log_message(f"Errore: Indirizzo o tipo non valido per {name}", level="error")
+                self.log.error(f"Indirizzo o tipo non valido per '{name}'")
                 errors.append(name)
                 continue
 
@@ -346,10 +422,10 @@ class BluetoothApp:
             self.root.after(0, lambda p=progress: self.update_progress_bar(p))
 
         self.root.after(0, lambda: self.progress.config(mode='indeterminate'))
-        self.log_message("Scrittura parametri completata.")
+        self.log.info("Scrittura parametri completata.")
         if errors:
             error_msg = f"Errori nella scrittura dei parametri: {', '.join(errors)}"
-            self.log_message(error_msg, level="error")
+            self.log.error(error_msg)
             self.root.after(0, lambda: messagebox.showerror("Scrittura Parametri", error_msg))
         else:
             self.root.after(0, lambda: messagebox.showinfo("Scrittura Parametri", "Tutti i parametri scritti con successo."))
@@ -390,7 +466,7 @@ class BluetoothApp:
 
             return None
         except Exception as e:
-            self.log_message(f"Errore preparazione dati: {e}", level="error")
+            self.log.error(f"Errore preparazione dati per scrittura: {e}")
             return None
 
     def lettura_e_verifica(self):
@@ -398,7 +474,7 @@ class BluetoothApp:
             messagebox.showerror("Errore", "Connetti un dispositivo prima di verificare i parametri.")
             return
 
-        self.log_message("Inizio lettura e verifica parametri...")
+        self.log.info("Inizio lettura e verifica parametri...")
         self.progress.config(mode='determinate')
         self.progress['value'] = 0
         asyncio.run_coroutine_threadsafe(self._lettura_e_verifica_async(), self._ble_loop)
@@ -423,11 +499,11 @@ class BluetoothApp:
 
         self.root.after(0, lambda: self.progress.config(mode='indeterminate'))
         if errors:
-            error_msg = f"Errori nei parametri: {', '.join(errors)}"
-            self.log_message(error_msg, level="error")
+            error_msg = f"Parametri non corrispondenti: {', '.join(errors)}"
+            self.log.error(error_msg)
             self.root.after(0, lambda: messagebox.showerror("Verifica", error_msg))
         else:
-            self.log_message("Tutti i parametri verificati con successo.")
+            self.log.info("Tutti i parametri verificati con successo.")
             self.root.after(0, lambda: messagebox.showinfo("Verifica", "Tutti i parametri verificati con successo."))
 
     def get_size_from_type(self, data_type):
@@ -489,7 +565,7 @@ class BluetoothApp:
                 for item in self.tree.get_children():
                     values = self.tree.item(item)['values']
                     writer.writerow([values[0], values[1], values[2], values[4]])  # Solo Nome, Indirizzo, Tipo, Letti
-            self.log_message("File salvato come CSV.")
+            self.log.info(f"Parametri salvati come CSV: {file_path}")
 
     def _init_ble_loop(self):
         """Crea un thread dedicato con un event loop asyncio persistente per BLE."""
@@ -523,30 +599,8 @@ class BluetoothApp:
             self._ble_loop_thread.join(timeout=join_timeout)
 
 
-    def log_message(self, message, level="info", overwrite=False):
-        """
-        Aggiunge un messaggio al log con il livello specificato.
-        Se `overwrite` è True, sovrascrive l'ultima riga.
-        """
-        tags = {
-            "info": "[INFO] ",
-            "error": "[ERRORE] ",
-        }
-
-        try:
-            self.log_text.configure(state="normal")
-
-            tag_prefix = tags.get(level, "")
-            if overwrite:
-                # Cancella l'ultima riga
-                self.log_text.delete("end-2l", "end-1l")
-            self.log_text.insert("end", f"{tag_prefix}{message}\n", level if level in tags else "")
-            self.log_text.see("end")
-        finally:
-            self.log_text.configure(state="disabled")
-
     def search_devices(self):
-        self.log_message("Richiesta ricerca dispositivi")
+        self.log.info("Avvio scansione dispositivi BLE...")
         self.progress.start()
         self.executor.submit(self._search_devices)
 
@@ -555,7 +609,7 @@ class BluetoothApp:
         try:
             devices = fut.result()
         except Exception as e:
-            self.log_message(f"Errore nella scansione BLE: {e}")
+            self.log.error(f"Errore nella scansione BLE: {e}")
             devices = {}
         self.root.after(0, self._populate_device_list, devices)
 
@@ -568,7 +622,7 @@ class BluetoothApp:
                     self.device_list.itemconfig(tk.END, {'bg': 'lightcoral'})
                 except Exception:
                     pass
-                self.log_message(f"Dispositivo trovato: {name} - {address} - RSSI: {rssi}")
+                self.log.info(f"Dispositivo trovato: {name} | {address} | RSSI: {rssi}")
         self.progress.stop()
 
     def connect_device(self):
@@ -578,13 +632,13 @@ class BluetoothApp:
         try:
             address = selected_device.split(" - ")[1]
         except Exception:
-            self.log_message("Formato elemento lista dispositivi inatteso; impossibile estrarre address.")
+            self.log.error("Formato voce lista dispositivi inatteso: impossibile estrarre l'indirizzo MAC.")
             return
         self.progress.start()
         self.executor.submit(self._connect_device, address)
 
     def _connect_device(self, address):
-        self.log_message(f"Tentativo connessione a {address}")
+        self.log.info(f"Tentativo di connessione a {address}...")
         fut = asyncio.run_coroutine_threadsafe(
             self.ble_manager.connect_to_device(address, connection_timeout=15.0),
             self._ble_loop
@@ -593,13 +647,13 @@ class BluetoothApp:
             fut.result()
             self.root.after(0, self.on_device_connected, address)
         except Exception as e:
-            self.log_message(f"Errore imprevisto nella gestione della connessione BLE: {e}")
+            self.log.error(f"Errore durante la connessione BLE: {e}")
         finally:
             self.root.after(0, self.progress.stop)
 
     def on_device_connected(self, addr):
         """Aggiorna l'interfaccia dopo una connessione riuscita."""
-        self.log_message(f"Connesso con {addr}")
+        self.log.info(f"Connesso con successo a {addr}")
         self.connection_status.set("Connesso")
         self.status_label.config(foreground="green")  # Cambia colore stato
         self.connect_button.config(state="disabled")  # Disabilita il bottone di connessione
@@ -609,10 +663,10 @@ class BluetoothApp:
     def disconnect_device(self):
         """Disconnette il dispositivo BLE in modo asincrono e aggiorna la GUI."""
         if not self.ble_manager.get_connection_status():
-            self.log_message("Nessun dispositivo connesso da disconnettere.")
+            self.log.warning("Nessun dispositivo connesso da disconnettere.")
             return
 
-        self.log_message("Tentativo di disconnessione in corso...")
+        self.log.info("Disconnessione in corso...")
 
         # Funzione asincrona per la disconnessione
         async def perform_disconnect():
@@ -627,16 +681,16 @@ class BluetoothApp:
 
     def on_disconnect_success(self):
         """Callback per gestire una disconnessione completata con successo."""
-        self.log_message("Disconnessione completata.")
+        self.log.info("Disconnessione completata.")
         self.connection_status.set("Disconnesso")
-        self.status_label.config(foreground="red")  # Aggiorna lo stato visivamente
-        self.connect_button.config(state="normal")  # Riabilita il pulsante "Connetti"
-        self.disconnect_button.config(state="disabled")  # Disabilita il pulsante "Disconnetti"
+        self.status_label.config(foreground="red")
+        self.connect_button.config(state="normal")
+        self.disconnect_button.config(state="disabled")
         messagebox.showinfo("Disconnessione", "Dispositivo disconnesso correttamente.")
 
     def on_disconnect_error(self, error):
         """Callback per gestire errori durante la disconnessione."""
-        self.log_message(f"Errore durante la disconnessione: {error}")
+        self.log.error(f"Errore durante la disconnessione: {error}")
         messagebox.showerror("Errore", f"Errore durante la disconnessione: {error}")
 
     def monitor_connection(self):
@@ -648,14 +702,14 @@ class BluetoothApp:
                 else:
                     self.root.after(5000, check_connection)
             except Exception as e:
-                print(f"Errore durante il monitoraggio della connessione: {e}")
+                self.log.error(f"Errore durante il monitoraggio della connessione: {e}")
         self.root.after(5000, check_connection)
 
     def handle_disconnection(self):
         """Gestisce la disconnessione del dispositivo."""
         self.ble_manager.reset_connection_state()
         self.connection_status.set("Disconnesso")
-        self.log_message("Connessione persa.")
+        self.log.warning("Connessione BLE persa inaspettatamente.")
         self.status_label.config(foreground="red")
         self.connect_button.config(state="normal")
         self.disconnect_button.config(state="disabled")
@@ -669,13 +723,13 @@ class BluetoothApp:
             if self.ble_manager.get_connection_status():
                 self.connection_status.set("Connesso")
                 self.status_label.config(foreground="green")
-                self.log_message("Riconnessione riuscita.")
+                self.log.info("Riconnessione riuscita.")
             else:
-                self.log_message("Tentativo di riconnessione fallito.", level="error")
-                self.root.after(10000, self.reconnect_device)  # Riprova dopo 10 secondi
+                self.log.error("Tentativo di riconnessione fallito.")
+                self.root.after(10000, self.reconnect_device)
         except Exception as e:
-            self.log_message(f"Errore durante la riconnessione: {e}", level="error")
-            self.root.after(10000, self.reconnect_device)  # Riprova dopo 10 secondi
+            self.log.error(f"Errore durante la riconnessione: {e}")
+            self.root.after(10000, self.reconnect_device)
 
     async def read_data(self, address, size, timeout=5):
         """Legge i dati BLE in modo asincrono utilizzando il loop di AsyncioWorker."""
@@ -686,15 +740,15 @@ class BluetoothApp:
                 timeout=timeout
             )
             if data and len(data) > 5:
-                return data[5:]  # Rimuovi l'intestazione (primi 5 byte)
+                return data[5:]
             else:
-                self.log_message("Errore: dati non validi ricevuti.", level = "error")
+                self.log.error("Dati ricevuti non validi o troppo corti.")
                 return None
         except asyncio.TimeoutError:
-            self.log_message(f"Errore: Timeout dopo {timeout} secondi.", level = "error")
+            self.log.error(f"Timeout lettura EEPROM dopo {timeout}s.")
             return None
         except Exception as e:
-            self.log_message(f"Errore imprevisto: {e}", level = "error")
+            self.log.error(f"Errore imprevisto durante la lettura: {e}")
             return None
 
     async def read_data_manually(self):
@@ -732,36 +786,31 @@ class BluetoothApp:
             address = int(self.write_address_entry.get(), 16)  # Indirizzo (in hex)
             data = bytearray.fromhex(self.data_entry.get())  # Dati (in formato hex)
         except ValueError:
-            # Mostra un messaggio di errore se i dati non sono validi
-            self.log_message("Errore: input non valido!")
+            self.log.error("Input manuale non valido: indirizzo o dati in formato errato.")
             messagebox.showerror("Errore", "Indirizzo o dati in formato non valido.")
             return
 
-        # Avvia la scrittura dei dati nel loop asyncio
         asyncio.run_coroutine_threadsafe(self.write_data(address, data), self._ble_loop)
-        self.log_message(f"Avviata la scrittura all'indirizzo {hex(address)} con i dati forniti.")
+        self.log.info(f"Scrittura manuale avviata: indirizzo={hex(address)}, dati={self.data_entry.get()}")
 
     async def write_data(self, starting_address, data):
         """ Scrive dati su BLE in modo asincrono utilizzando AsyncioWorker. """
-        # Controlla lo stato della connessione BLE
         if not self.ble_manager.get_connection_status():
-            self.log_message("Errore: Nessun dispositivo connesso!")
+            self.log.error("Scrittura fallita: nessun dispositivo connesso.")
             messagebox.showerror("Errore", "Nessun dispositivo connesso!")
             return False
 
         try:
-            # Esegue la scrittura dei dati
             result = await self.ble_manager.write_eeprom(starting_address, data)
             if not result:
-                self.log_message("Scrittura fallita: dispositivo ha restituito 'False'", level="error")
+                self.log.error(f"Scrittura all'indirizzo {hex(starting_address)} non confermata dal dispositivo.")
                 messagebox.showerror("Errore", "Scrittura fallita: dispositivo non ha confermato l'operazione.")
                 return False
             else:
-                self.log_message("Scrittura andata a buon fine")
+                self.log.info(f"Scrittura all'indirizzo {hex(starting_address)} completata con successo.")
                 return True
         except Exception as e:
-            # Gestisce eventuali errori durante la scrittura
-            self.log_message(f"Errore durante la scrittura all'indirizzo {hex(starting_address)}: {str(e)}")
+            self.log.error(f"Errore durante la scrittura all'indirizzo {hex(starting_address)}: {e}")
             messagebox.showerror("Errore", f"Errore durante la scrittura: {str(e)}")
             return False
 
@@ -776,7 +825,7 @@ class BluetoothApp:
             self.progress["value"] = value
             self.root.update_idletasks()  # Forza l'aggiornamento della GUI
         else:
-            self.log_message(f"Valore non valido per la barra di progresso: {value}", level="error")
+            self.log.error(f"Valore non valido per la barra di progresso: {value} (atteso 0-100)")
 
     def on_close(self):
         self._shutdown_ble_loop(join_timeout=3.0)
