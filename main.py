@@ -30,6 +30,7 @@ class TkTextHandler(logging.Handler):
     """
     Handler di logging che scrive i messaggi nel widget Text di Tkinter.
     Thread-safe: usa root.after() per aggiornare la GUI dal thread corretto.
+    autoscroll_var: BooleanVar opzionale; se False non chiama see("end").
     """
     LEVEL_TAGS = {
         logging.DEBUG:    "debug",
@@ -39,9 +40,10 @@ class TkTextHandler(logging.Handler):
         logging.CRITICAL: "critical",
     }
 
-    def __init__(self, text_widget):
+    def __init__(self, text_widget, autoscroll_var=None):
         super().__init__()
         self.text_widget = text_widget
+        self.autoscroll_var = autoscroll_var
         # Configura i tag colore nel widget
         text_widget.tag_configure("debug",    foreground="gray")
         text_widget.tag_configure("info",     foreground="black")
@@ -57,7 +59,8 @@ class TkTextHandler(logging.Handler):
             try:
                 self.text_widget.configure(state="normal")
                 self.text_widget.insert("end", msg + "\n", tag)
-                self.text_widget.see("end")
+                if self.autoscroll_var is None or self.autoscroll_var.get():
+                    self.text_widget.see("end")
             finally:
                 self.text_widget.configure(state="disabled")
 
@@ -104,6 +107,7 @@ class BluetoothApp:
         self.root.title("Checker")
 
         # Variabili legate allo stato dell'applicazione
+        self.log_autoscroll = tk.BooleanVar(value=True)  # flag auto-scroll log
         self.connection_status = tk.StringVar(value="Disconnesso")
         self.device_info = tk.StringVar(value="")   # "Nome  |  MAC"
         self.data_output = tk.StringVar(value="")
@@ -137,7 +141,7 @@ class BluetoothApp:
     def _attach_ui_logging(self, text_widget):
         """Aggiunge il TkTextHandler al root logger dopo che il widget è pronto."""
         formatter = logging.Formatter("%(asctime)s  %(levelname)-8s  %(message)s", datefmt="%H:%M:%S")
-        tk_handler = TkTextHandler(text_widget)
+        tk_handler = TkTextHandler(text_widget, autoscroll_var=self.log_autoscroll)
         tk_handler.setFormatter(formatter)
         tk_handler.setLevel(logging.INFO)
         logging.getLogger().addHandler(tk_handler)
@@ -169,22 +173,36 @@ class BluetoothApp:
         self.create_right_widgets(right_frame)
 
         # Log attività in basso a tutta larghezza
-        log_frame = ttk.LabelFrame(main_frame, text="Log Attività")
-        log_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 10))
-        log_frame.columnconfigure(0, weight=1)
+        # Header: titolo + checkbox auto-scroll sulla stessa riga
+        log_header = ttk.Frame(main_frame)
+        log_header.grid(row=1, column=0, sticky="ew", padx=10, pady=(4, 0))
+        log_header.columnconfigure(0, weight=1)
 
-        self.log_text = tk.Text(log_frame, height=7, state="disabled", wrap="none")
-        self.log_text.grid(row=0, column=0, sticky="ew", padx=5, pady=(5, 0))
+        ttk.Label(log_header, text="Log Attività",
+                  font=("Helvetica", 9, "bold")).grid(row=0, column=0, sticky="w")
+        ttk.Checkbutton(
+            log_header, text="Auto-scroll",
+            variable=self.log_autoscroll
+        ).grid(row=0, column=1, sticky="e")
+
+        log_frame = ttk.Frame(main_frame)
+        log_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 10))
+        log_frame.columnconfigure(0, weight=1)
+        main_frame.rowconfigure(2, weight=0)
+
+        self.log_text = tk.Text(log_frame, height=7, state="disabled", wrap="none",
+                                relief="sunken", borderwidth=1)
+        self.log_text.grid(row=0, column=0, sticky="ew", padx=0, pady=0)
 
         scrollbar_v = ttk.Scrollbar(log_frame, orient="vertical", command=self.log_text.yview)
-        scrollbar_v.grid(row=0, column=1, sticky="ns", pady=(5, 0))
+        scrollbar_v.grid(row=0, column=1, sticky="ns")
 
         scrollbar_h = ttk.Scrollbar(log_frame, orient="horizontal", command=self.log_text.xview)
-        scrollbar_h.grid(row=1, column=0, sticky="ew", padx=5, pady=(0, 5))
+        scrollbar_h.grid(row=1, column=0, sticky="ew", pady=(0, 0))
 
         self.log_text.configure(yscrollcommand=scrollbar_v.set, xscrollcommand=scrollbar_h.set)
 
-        # Collega il TkTextHandler ora che il widget è pronto
+        # Collega il TkTextHandler ora che il widget è pronto, passando il flag
         self._attach_ui_logging(self.log_text)
 
     def _set_connection_status(self, connected: bool, text: str | None = None):
@@ -220,6 +238,58 @@ class BluetoothApp:
         dec_str   = "  ".join(f"{b:>3d}" for b in raw_bytes)
         ascii_str = "   ".join(chr(b) if 32 <= b < 127 else "·" for b in raw_bytes)
         return f"HEX:   {hex_str}\nDEC:   {dec_str}\nASCII: {ascii_str}"
+
+    def _on_data_entry_key(self, event=None):
+        """Auto-spacing hex nel campo dati scrittura: inserisce spazio ogni 2 char."""
+        # Ignora tasti di navigazione/modifica che non aggiungono testo
+        if event and event.keysym in (
+            "BackSpace", "Delete", "Left", "Right", "Home", "End",
+            "Tab", "Return", "Escape", "Control_L", "Control_R",
+            "Shift_L", "Shift_R", "Alt_L", "Alt_R"
+        ):
+            self._validate_hex_input(self.data_entry)
+            return
+
+        widget = self.data_entry
+        raw = widget.get().replace(" ", "").upper()
+        # Ricostruisce la stringa con spazi ogni 2 caratteri
+        spaced = " ".join(raw[i:i+2] for i in range(0, len(raw), 2))
+        # Evita di riscrivere se già uguale (previene loop)
+        if widget.get() != spaced:
+            pos = widget.index("insert")
+            widget.delete(0, "end")
+            widget.insert(0, spaced)
+            # Riposiziona il cursore alla fine
+            widget.icursor("end")
+        self._validate_hex_input(self.data_entry)
+
+    def _update_read_tree(self, raw_bytes: bytes):
+        """Popola il Treeview di risultato lettura con una riga per byte."""
+        # Svuota
+        for row in self.read_tree.get_children():
+            self.read_tree.delete(row)
+        # Popola
+        for i, b in enumerate(raw_bytes):
+            ascii_ch = chr(b) if 32 <= b < 127 else "·"
+            tag = "oddrow" if i % 2 == 0 else "evenrow"
+            self.read_tree.insert("", "end",
+                values=(f"{i}", f"{b:02X}", f"{b}", ascii_ch),
+                tags=(tag,))
+        self.read_tree.tag_configure("oddrow",  background="lightgrey")
+        self.read_tree.tag_configure("evenrow", background="white")
+        # Abilita il pulsante copia
+        self.copy_to_write_btn.config(state="normal")
+        # Salva i byte grezzi per la funzione copia
+        self._last_read_bytes = raw_bytes
+
+    def _copy_read_to_write(self):
+        """Copia i byte dell'ultima lettura nel campo dati scrittura."""
+        if not hasattr(self, "_last_read_bytes") or not self._last_read_bytes:
+            return
+        hex_str = " ".join(f"{b:02X}" for b in self._last_read_bytes)
+        self.data_entry.delete(0, "end")
+        self.data_entry.insert(0, hex_str)
+        self._validate_hex_input(self.data_entry)
 
     def create_left_widgets(self, frame):
         # ── Dispositivi Bluetooth ──────────────────────────────────────────────
@@ -300,16 +370,43 @@ class BluetoothApp:
         self.read_button.grid(row=0, column=2, rowspan=2,
                               padx=PAD_SM, pady=PAD_SM, sticky="ns")
 
-        # Output lettura: 3 righe HEX / DEC / ASCII
-        ttk.Label(read_frame, text="Risultato:").grid(
-            row=2, column=0, padx=PAD, pady=(PAD_SM, PAD), sticky="nw")
-        self.read_output_text = tk.Text(
-            read_frame, height=3, width=36,
-            font=("Courier New", 9), state="disabled",
-            relief="sunken", borderwidth=1)
-        self.read_output_text.grid(row=2, column=1, columnspan=2,
-                                   padx=PAD_SM, pady=(PAD_SM, PAD),
-                                   sticky="ew")
+        # Output lettura: tabella per-byte (Offset | HEX | DEC | ASCII)
+        result_lbl_frame = ttk.Frame(read_frame)
+        result_lbl_frame.grid(row=2, column=0, columnspan=3,
+                              padx=PAD, pady=(PAD_SM, PAD), sticky="ew")
+        result_lbl_frame.columnconfigure(0, weight=1)
+
+        ttk.Label(result_lbl_frame, text="Risultato:").grid(
+            row=0, column=0, sticky="w")
+        self.copy_to_write_btn = ttk.Button(
+            result_lbl_frame, text="→ Copia in Scrittura",
+            command=self._copy_read_to_write)
+        self.copy_to_write_btn.grid(row=0, column=1, sticky="e")
+        self.copy_to_write_btn.config(state="disabled")
+
+        read_tree_frame = ttk.Frame(read_frame)
+        read_tree_frame.grid(row=3, column=0, columnspan=3,
+                             padx=PAD_SM, pady=(0, PAD), sticky="ew")
+        read_tree_frame.columnconfigure(0, weight=1)
+
+        self.read_tree = ttk.Treeview(
+            read_tree_frame,
+            columns=("Offset", "HEX", "DEC", "ASCII"),
+            show="headings", height=4)
+        self.read_tree.heading("Offset", text="Offset")
+        self.read_tree.heading("HEX",    text="HEX")
+        self.read_tree.heading("DEC",    text="DEC")
+        self.read_tree.heading("ASCII",  text="ASCII")
+        self.read_tree.column("Offset", width=55,  minwidth=45, anchor="center", stretch=False)
+        self.read_tree.column("HEX",    width=55,  minwidth=45, anchor="center", stretch=False)
+        self.read_tree.column("DEC",    width=55,  minwidth=45, anchor="center", stretch=False)
+        self.read_tree.column("ASCII",  width=55,  minwidth=45, anchor="center", stretch=True)
+        self.read_tree.grid(row=0, column=0, sticky="ew")
+
+        read_tree_scroll = ttk.Scrollbar(
+            read_tree_frame, orient="vertical", command=self.read_tree.yview)
+        self.read_tree.configure(yscrollcommand=read_tree_scroll.set)
+        read_tree_scroll.grid(row=0, column=1, sticky="ns")
 
         # ── Scrittura EEPROM ───────────────────────────────────────────────────
         write_frame = ttk.LabelFrame(frame, text="Scrittura EEPROM")
@@ -329,19 +426,31 @@ class BluetoothApp:
 
         ttk.Label(write_frame, text="Dati hex (es. 03 66 36):").grid(
             row=1, column=0, padx=PAD, pady=PAD_SM, sticky="w")
+
+        data_entry_frame = ttk.Frame(write_frame)
+        data_entry_frame.grid(row=1, column=1, columnspan=2,
+                              padx=PAD_SM, pady=PAD_SM, sticky="ew")
+        data_entry_frame.columnconfigure(0, weight=1)
+
         # tk.Entry per poter impostare highlightcolor (validazione visuale)
         self.data_entry = tk.Entry(
-            write_frame, width=28,
+            data_entry_frame, width=28,
             font=("Courier New", 10),
             relief="sunken", borderwidth=1,
             highlightthickness=2,
             highlightbackground="gray", highlightcolor="gray",
             insertbackground="black")
-        self.data_entry.grid(row=1, column=1, columnspan=2,
-                             padx=PAD_SM, pady=PAD_SM, sticky="ew")
-        self.data_entry.bind(
-            "<KeyRelease>",
-            lambda e: self._validate_hex_input(self.data_entry, e))
+        self.data_entry.grid(row=0, column=0, sticky="ew")
+        # Auto-spacing: inserisce uno spazio ogni 2 caratteri hex
+        self.data_entry.bind("<KeyRelease>", self._on_data_entry_key)
+
+        ttk.Button(
+            data_entry_frame, text="✕ Pulisci",
+            command=lambda: (
+                self.data_entry.delete(0, "end"),
+                self._validate_hex_input(self.data_entry)
+            )
+        ).grid(row=0, column=1, padx=(PAD_SM, 0))
 
     def create_right_widgets(self, frame):
         # ── Tabella parametri ──────────────────────────────────────────────────
@@ -583,6 +692,24 @@ class BluetoothApp:
     def scrivi_parametri(self):
         if not self.ble_manager.get_connection_status():
             messagebox.showerror("Errore", "Connetti un dispositivo prima di scrivere i parametri.")
+            return
+
+        # Conta i parametri con un valore da scrivere
+        n_params = sum(
+            1 for item in self.tree.get_children()
+            if self.tree.item(item)['values'][3]  # colonna "Da Scrivere"
+        )
+        if n_params == 0:
+            messagebox.showinfo("Scrivi Parametri", "Nessun parametro da scrivere.")
+            return
+
+        risposta = messagebox.askokcancel(
+            "Conferma Scrittura",
+            f"Stai per scrivere {n_params} parametro/i sul dispositivo.\n\n"
+            "Questa operazione sovrascrive i valori attuali.\n"
+            "Vuoi procedere?"
+        )
+        if not risposta:
             return
 
         self.log.info("Inizio scrittura parametri...")
@@ -1042,8 +1169,7 @@ class BluetoothApp:
         output = await self.read_data(address, size)
         if output:
             self._set_connection_status(True, "Lettura completata")
-            self.root.after(0, self._update_read_output,
-                           self._format_read_output(output))
+            self.root.after(0, self._update_read_output, bytes(output))
         else:
             self._set_connection_status(False, "Errore lettura")
 
@@ -1051,12 +1177,9 @@ class BluetoothApp:
         """Callback associata al pulsante per avviare la lettura."""
         asyncio.run_coroutine_threadsafe(self.read_data_manually(), self._ble_loop)
 
-    def _update_read_output(self, text: str):
-        """Aggiorna il Text widget di output lettura (thread-safe)."""
-        self.read_output_text.configure(state="normal")
-        self.read_output_text.delete("1.0", "end")
-        self.read_output_text.insert("1.0", text)
-        self.read_output_text.configure(state="disabled")
+    def _update_read_output(self, raw_bytes: bytes):
+        """Aggiorna il Treeview di output lettura (thread-safe, da after())."""
+        self._update_read_tree(raw_bytes)
 
     def write_data_manually(self):
         """
