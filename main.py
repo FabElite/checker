@@ -231,7 +231,7 @@ class BluetoothApp:
                     address = row[1].strip()
                     data_type = row[2].strip()
                     to_write = row[3].strip() if len(row) > 3 else ""
-                    # Gestione separatore decimale con virgola per "Da Scrivere"
+                    # Gestione separatore decimale con virgola per "Da Scrivere" solo se non finisce con 'H'
                     if to_write and data_type.upper() == 'FLOAT32':
                         try:
                             # Sostituisci ',' con '.' per parsing float
@@ -358,6 +358,10 @@ class BluetoothApp:
         try:
             data_type = data_type.upper()
 
+            if data_type.endswith('H'):
+                # Interpreta come esadecimale (es. "03 66 36")
+                return bytearray.fromhex(value_str)
+
             # Gestione STRING
             if data_type.startswith('STRING'):
                 size = self.get_size_from_type(data_type)
@@ -427,7 +431,10 @@ class BluetoothApp:
             self.root.after(0, lambda: messagebox.showinfo("Verifica", "Tutti i parametri verificati con successo."))
 
     def get_size_from_type(self, data_type):
+        original_data_type = data_type
         data_type = data_type.upper()
+        if data_type.endswith('H'):
+            data_type = data_type[:-1]  # Rimuovi 'H' per calcolare la size sul tipo base
         sizes = {
             'UINT8': 1,
             'UINT16': 2,
@@ -447,6 +454,10 @@ class BluetoothApp:
             return "N/A"
 
         data_type = data_type.upper()
+
+        if data_type.endswith('H'):
+            # Interpreta come esadecimale
+            return ' '.join(f'{b:02x}' for b in data)
 
         # Caso STRING
         if data_type.startswith('STRING'):
