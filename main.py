@@ -739,6 +739,13 @@ class BluetoothApp:
                 progress = (done / total_params) * 100
                 self.root.after(0, lambda p=progress: self.update_progress_bar(p))
 
+        # ── Log riepilogo lettura ────────────────────────────────────────────
+        self.log.info(f"── Lettura parametri: {total_params} letti ──")
+        for item in self.tree.get_children():
+            v = self.tree.item(item)['values']
+            name, addr_str, dtype, _, letto = v
+            self.log.info(f"  {name:<30s} {addr_str}  {dtype:<8s}  {letto}")
+
         # Fine
         self.root.after(0, self._end_activity_success, "✓ Lettura parametri completata.")
 
@@ -768,7 +775,7 @@ class BluetoothApp:
         if not risposta:
             return
 
-        self.log.info("Inizio scrittura parametri...")
+        self.log.info(f"── Scrittura parametri: {n_params} da scrivere ──")
         # Status bar
         self.status_bar.set_activity("📤 Scrittura parametri in corso…", "info")
         self.status_bar.progress_mode('determinate')
@@ -782,6 +789,7 @@ class BluetoothApp:
         if total == 0:
             return
 
+        n_params = sum(1 for item in children if self.tree.item(item)['values'][3])
         errors = []
         for idx, item in enumerate(children):
             values = self.tree.item(item)['values']
@@ -803,9 +811,10 @@ class BluetoothApp:
 
                 success = await self.write_data(address, data)
                 if success:
-                    self.log.info(f"'{name}' scritto con successo.")
+                    self.log.info(f"  SCRITTO  {name:<30s} {address_str}  {data_type:<8s}  {to_write}"
+                                  + (f"  [{data.hex(' ')}]" if self.log_debug.get() else ""))
                 else:
-                    self.log.error(f"Scrittura fallita per '{name}'")
+                    self.log.error(f"  ERRORE   {name:<30s} {address_str}  valore={to_write}")
                     errors.append(name)
             except ValueError:
                 self.log.error(f"Indirizzo o tipo non valido per '{name}'")
@@ -819,14 +828,17 @@ class BluetoothApp:
         self.root.after(0, lambda: self.status_bar.progress_mode('indeterminate'))
 
         # Esito
+        ok_count = n_params - len(errors)
         if errors:
-            error_msg = f"Errori nella scrittura dei parametri: {', '.join(errors)}"
-            self.log.error(error_msg)
+            self.log.error(f"── Scrittura completata: OK={ok_count}  KO={len(errors)} ──")
+            self.log.error(f"   Falliti: {', '.join(errors)}")
+            error_msg = f"Errori nella scrittura di: {', '.join(errors)}"
             self.root.after(0, lambda: (
                 self.status_bar.set_activity("⛔ Scrittura parametri con errori.", "error"),
                 messagebox.showerror("Scrittura Parametri", error_msg)
             ))
         else:
+            self.log.info(f"── Scrittura completata: OK={ok_count}  KO=0 ──")
             self.root.after(0, lambda: (
                 self.status_bar.set_activity("✓ Scrittura parametri completata.", "success"),
                 messagebox.showinfo("Scrittura Parametri", "Tutti i parametri scritti con successo.")
@@ -838,7 +850,7 @@ class BluetoothApp:
             messagebox.showerror("Errore", "Connetti un dispositivo prima di verificare i parametri.")
             return
 
-        self.log.info("Inizio lettura e verifica parametri...")
+        self.log.info("── Lettura e verifica parametri ──")
         self.status_bar.set_activity("🔎 Lettura+Verifica in corso…", "info")
         self.status_bar.progress_mode('determinate')
         self.status_bar.progress_set(0)
@@ -865,16 +877,29 @@ class BluetoothApp:
                 tags = [t for t in self.tree.item(item, "tags") if t not in ("oddrow", "evenrow", "mismatch")]
                 self.tree.item(item, tags=tags + ["mismatch"])
 
+        # ── Log riepilogo verifica ───────────────────────────────────────────
+        verified = sum(1 for item in self.tree.get_children()
+                       if self.tree.item(item)['values'][3])  # ha valore atteso
+        ok_count = verified - len(errors)
+        self.log.info(f"── Verifica parametri: OK={ok_count}  KO={len(errors)} ──")
+        if errors:
+            self.log.error("  Parametri non conformi (atteso → letto):")
+            for item in self.tree.get_children():
+                v = self.tree.item(item)['values']
+                name, addr_str, dtype, to_write, letto = v
+                if not to_write:
+                    continue
+                if str(to_write).replace(',', '.') != str(letto).replace(',', '.'):
+                    self.log.error(f"  KO  {name:<30s} {addr_str}  atteso={to_write}  letto={letto}")
+
         # Esito
         if errors:
-            error_msg = f"Parametri non corrispondenti: {', '.join(errors)}"
-            self.log.error(error_msg)
+            error_msg = f"{len(errors)} parametro/i non conforme/i"
             self.root.after(0, lambda: (
                 self.status_bar.set_activity("⚠ Verifica: non conformità riscontrate.", "warn"),
                 messagebox.showerror("Verifica", error_msg)
             ))
         else:
-            self.log.info("Tutti i parametri verificati con successo.")
             self.root.after(0, lambda: (
                 self.status_bar.set_activity("✓ Verifica completata con successo.", "success"),
                 messagebox.showinfo("Verifica", "Tutti i parametri verificati con successo.")
@@ -993,7 +1018,8 @@ class BluetoothApp:
 
     def on_device_connected(self, addr, dev_name=""):
         """Aggiorna l'interfaccia dopo una connessione riuscita."""
-        self.log.info(f"Connesso con successo a {addr}")
+        display = f"{dev_name} [{addr}]" if dev_name else addr
+        self.log.info(f"═══ CONNESSO a {display} ═══")
         self.status_bar.set_ble("ok")
         self.status_bar.set_device_info(dev_name, addr)
         self.status_bar.set_activity(f"✓ Connesso a {addr}", "success")
@@ -1023,7 +1049,7 @@ class BluetoothApp:
 
     def on_disconnect_success(self):
         """Callback per gestire una disconnessione completata con successo."""
-        self.log.info("Disconnessione completata.")
+        self.log.info("═══ DISCONNESSO ═══")
         self.status_bar.set_ble("off")
         self.status_bar.set_device_info(None, None)
         self.status_bar.set_activity("✓ Disconnesso.", "success")
