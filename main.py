@@ -43,7 +43,12 @@ def get_version() -> str:
 
 APP_VERSION = get_version()
 
-LOG_FILENAME = "app.log"
+import os as _os, configparser as _cp
+_BASE_DIR     = _os.path.dirname(_os.path.abspath(__file__))
+LOG_DIR       = _os.path.join(_BASE_DIR, "logs")
+LOG_FILENAME  = _os.path.join(LOG_DIR, "app.log")
+SETTINGS_FILE = _os.path.join(_BASE_DIR, "settings.ini")
+_os.makedirs(LOG_DIR, exist_ok=True)
 LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
@@ -258,8 +263,14 @@ class BluetoothApp:
         self.root.title(f"Checker  {APP_VERSION}")
 
         # Variabili di stato applicazione
-        self.log_autoscroll = tk.BooleanVar(value=True)  # flag auto-scroll log
         self.is_scanning = False
+
+        # Carica preferenze persistenti (settings.ini)
+        _saved = self._load_settings()
+        self.log_autoscroll = tk.BooleanVar(value=_saved.get("log_autoscroll", True))
+        self.log_debug      = tk.BooleanVar(value=_saved.get("log_debug", False))
+        self.log_autoscroll.trace_add("write", lambda *_: self._save_settings())
+        self.log_debug.trace_add("write", self._on_log_debug_changed)
 
         # Configura il logger (file handler subito, TkTextHandler dopo create_widgets)
         self._setup_file_logging()
@@ -272,21 +283,60 @@ class BluetoothApp:
         self._pulse_heartbeat()
 
     # ── Logging su file + UI ─────────────────────────────────────────────────
+    def _load_settings(self) -> dict:
+        """Legge settings.ini e restituisce le preferenze salvate."""
+        cfg = _cp.ConfigParser()
+        cfg.read(SETTINGS_FILE, encoding="utf-8")
+        result = {}
+        if "ui" in cfg:
+            result["log_autoscroll"] = cfg["ui"].getboolean("log_autoscroll", fallback=True)
+            result["log_debug"]      = cfg["ui"].getboolean("log_debug",      fallback=True)
+        return result
+
+    def _save_settings(self, *_):
+        """Salva le preferenze correnti in settings.ini."""
+        cfg = _cp.ConfigParser()
+        cfg["ui"] = {
+            "log_autoscroll": str(self.log_autoscroll.get()),
+            "log_debug":      str(self.log_debug.get()),
+        }
+        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+            cfg.write(f)
+
+    def _on_log_debug_changed(self, *_):
+        """Aggiorna il livello del root logger quando cambia la checkbox Debug."""
+        level = logging.DEBUG if self.log_debug.get() else logging.INFO
+        logging.getLogger().setLevel(level)
+        self._save_settings()
+
     def _setup_file_logging(self):
-        """Configura il root logger con handler su file rotativo."""
+        """
+        Configura il root logger con handler su file rotativo (logs/app.log).
+        Rotazione: 5 MB x 3 backup.
+        - Il livello dipende dalla preferenza log_debug.
+        - bleak/winrt/asyncio restano sempre a WARNING (troppo rumorosi).
+        - shared_lib resta a INFO (niente raw byte di notifiche BLE).
+        """
         formatter = logging.Formatter(LOG_FORMAT, datefmt=LOG_DATE_FORMAT)
         file_handler = logging.handlers.RotatingFileHandler(
             LOG_FILENAME, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
         )
         file_handler.setFormatter(formatter)
-        file_handler.setLevel(logging.DEBUG)
+        file_handler.setLevel(logging.DEBUG)   # filtra il root logger, non l'handler
 
+        initial_level = logging.DEBUG if self.log_debug.get() else logging.INFO
         root_logger = logging.getLogger()
-        root_logger.setLevel(logging.DEBUG)
+        root_logger.setLevel(initial_level)
         root_logger.addHandler(file_handler)
 
+        # Silenzia librerie terze rumorose (scanner BLE: decine di righe per scansione)
+        for noisy in ("bleak", "winrt", "asyncio"):
+            logging.getLogger(noisy).setLevel(logging.WARNING)
+        logging.getLogger("shared_lib").setLevel(logging.INFO)
+
         self.log = logging.getLogger(__name__)
-        self.log.info("Applicazione avviata.")
+        self.log.info(f"Applicazione avviata — versione {APP_VERSION} — debug={'on' if self.log_debug.get() else 'off'}")
+        self.log.info(f"Log: {LOG_FILENAME}")
 
     def _attach_ui_logging(self, text_widget):
         """Aggiunge il TkTextHandler al root logger dopo che il widget è pronto."""
@@ -330,26 +380,35 @@ class BluetoothApp:
         self.create_right_widgets(right_frame)
 
         # ─ Log attività in basso a tutta larghezza
-        # Header: titolo + checkbox auto-scroll sulla stessa riga
-        log_header = ttk.Frame(main_frame)
-        log_header.grid(row=2, column=0, sticky="ew", padx=10, pady=(4, 0))
-        log_header.columnconfigure(0, weight=1)
-        ttk.Label(log_header, text="Log Attività", font=("Helvetica", 9, "bold")).grid(row=0, column=0, sticky="w")
-        ttk.Checkbutton(log_header, text="Auto-scroll", variable=self.log_autoscroll).grid(row=0, column=1, sticky="e")
+        main_frame.rowconfigure(2, weight=0)
+        main_frame.rowconfigure(3, weight=0)
+        main_frame.rowconfigure(4, weight=0)
+
+        ttk.Label(main_frame, text="Log Attività",
+                  font=("Helvetica", 9, "bold")).grid(
+            row=2, column=0, sticky="w", padx=10, pady=(4, 0))
 
         log_frame = ttk.Frame(main_frame)
-        log_frame.grid(row=3, column=0, sticky="ew", padx=10, pady=(0, 10))
+        log_frame.grid(row=3, column=0, sticky="ew", padx=10, pady=(2, 0))
         log_frame.columnconfigure(0, weight=1)
-        main_frame.rowconfigure(3, weight=0)
 
-        self.log_text = tk.Text(log_frame, height=7, state="disabled", wrap="none", relief="sunken", borderwidth=1)
-        self.log_text.grid(row=0, column=0, sticky="ew", padx=0, pady=0)
+        self.log_text = tk.Text(log_frame, height=7, state="disabled", wrap="none",
+                                relief="sunken", borderwidth=1)
+        self.log_text.grid(row=0, column=0, sticky="ew")
 
         scrollbar_v = ttk.Scrollbar(log_frame, orient="vertical", command=self.log_text.yview)
         scrollbar_v.grid(row=0, column=1, sticky="ns")
         scrollbar_h = ttk.Scrollbar(log_frame, orient="horizontal", command=self.log_text.xview)
-        scrollbar_h.grid(row=1, column=0, sticky="ew", pady=(0, 0))
+        scrollbar_h.grid(row=1, column=0, sticky="ew")
         self.log_text.configure(yscrollcommand=scrollbar_v.set, xscrollcommand=scrollbar_h.set)
+
+        # Footer con checkbox in basso a sinistra, sotto il log
+        log_footer = ttk.Frame(main_frame)
+        log_footer.grid(row=4, column=0, sticky="w", padx=10, pady=(2, 8))
+        ttk.Checkbutton(log_footer, text="Auto-scroll",
+                        variable=self.log_autoscroll).pack(side="left", padx=(0, 12))
+        ttk.Checkbutton(log_footer, text="Debug",
+                        variable=self.log_debug).pack(side="left")
 
         # Collega il TkTextHandler ora che il widget è pronto
         self._attach_ui_logging(self.log_text)
@@ -811,8 +870,8 @@ class BluetoothApp:
 
                 success = await self.write_data(address, data)
                 if success:
-                    self.log.info(f"  SCRITTO  {name:<30s} {address_str}  {data_type:<8s}  {to_write}"
-                                  + (f"  [{data.hex(' ')}]" if self.log_debug.get() else ""))
+                    hex_suffix = f"  [{data.hex(' ')}]" if self.log_debug.get() else ""
+                    self.log.info(f"  SCRITTO  {name:<30s} {address_str}  {data_type:<8s}  {to_write}{hex_suffix}")
                 else:
                     self.log.error(f"  ERRORE   {name:<30s} {address_str}  valore={to_write}")
                     errors.append(name)
@@ -1226,11 +1285,11 @@ class BluetoothApp:
         try:
             result = await self.ble_manager.write_eeprom(starting_address, data)
             if not result:
-                self.log.error(f"Scrittura all'indirizzo {hex(starting_address)} non confermata dal dispositivo.")
+                self.log.error(f"Scrittura a {hex(starting_address)}: dispositivo non ha confermato.")
                 messagebox.showerror("Errore", "Scrittura fallita: dispositivo non ha confermato l'operazione.")
                 return False
             else:
-                self.log.info(f"Scrittura all'indirizzo {hex(starting_address)} completata con successo.")
+                self.log.debug(f"write_eeprom {hex(starting_address)}: confermato dal dispositivo.")
                 return True
         except Exception as e:
             self.log.error(f"Errore durante la scrittura all'indirizzo {hex(starting_address)}: {e}")
