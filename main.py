@@ -419,7 +419,7 @@ class BluetoothApp:
         device_frame = ttk.LabelFrame(frame, text="Dispositivi Bluetooth")
         device_frame.pack(fill="x", padx=PAD_LG, pady=PAD_LG)
 
-        self.device_list = tk.Listbox(device_frame, height=6, width=40)
+        self.device_list = tk.Listbox(device_frame, height=6, width=45)
         self.device_list.grid(row=0, column=0, padx=PAD_SM, pady=PAD_SM)
 
         device_controls = ttk.Frame(device_frame)
