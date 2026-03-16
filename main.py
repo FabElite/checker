@@ -18,7 +18,13 @@ def get_version() -> str:
     2. git describe  — disponibile in sviluppo se il repo ha almeno un tag
     3. "dev"         — fallback
     """
-    # 1. File generato dal build (presente nell'exe o se build già eseguito)
+    # 1. File generato dal build — presente nel bundle _MEIPASS di PyInstaller
+    import sys as _sys_v, os as _os_v
+    if getattr(_sys_v, "frozen", False):
+        # Aggiunge _MEIPASS al path così import _version trova il file
+        meipass = getattr(_sys_v, "_MEIPASS", None)
+        if meipass and meipass not in _sys_v.path:
+            _sys_v.path.insert(0, meipass)
     try:
         import _version
         return _version.__version__
@@ -26,12 +32,15 @@ def get_version() -> str:
         pass
 
     # 2. git describe (solo in sviluppo)
-    import subprocess, os
+    import subprocess, os, sys
     try:
+        cwd = (os.path.dirname(sys.executable)
+               if getattr(sys, "frozen", False)
+               else os.path.dirname(os.path.abspath(__file__)))
         result = subprocess.run(
             ["git", "describe", "--tags", "--dirty", "--always"],
             capture_output=True, text=True, timeout=3,
-            cwd=os.path.dirname(os.path.abspath(__file__))
+            cwd=cwd
         )
         if result.returncode == 0:
             return result.stdout.strip()
@@ -43,8 +52,22 @@ def get_version() -> str:
 
 APP_VERSION = get_version()
 
-import os as _os, configparser as _cp
-_BASE_DIR     = _os.path.dirname(_os.path.abspath(__file__))
+import os as _os, sys as _sys, configparser as _cp
+
+def _app_dir() -> str:
+    """
+    Restituisce la cartella "radice" dell'applicazione:
+    - Se frozen (exe PyInstaller): cartella che contiene checker.exe
+    - Se script Python:            cartella che contiene main.py
+    Usata per logs/ e settings.ini, che devono stare accanto all'exe,
+    NON nella cartella temporanea _MEIPASS di PyInstaller.
+    """
+    if getattr(_sys, "frozen", False):
+        # exe PyInstaller: sys.executable = .../dist/checker.exe
+        return _os.path.dirname(_sys.executable)
+    return _os.path.dirname(_os.path.abspath(__file__))
+
+_BASE_DIR     = _app_dir()
 LOG_DIR       = _os.path.join(_BASE_DIR, "logs")
 LOG_FILENAME  = _os.path.join(LOG_DIR, "app.log")
 SETTINGS_FILE = _os.path.join(_BASE_DIR, "settings.ini")
@@ -271,7 +294,6 @@ class BluetoothApp:
         self.log_debug      = tk.BooleanVar(value=_saved.get("log_debug", False))
         self.log_autoscroll.trace_add("write", lambda *_: self._save_settings())
         self.log_debug.trace_add("write", self._on_log_debug_changed)
-        self._save_settings()   # scrive settings.ini subito, anche al primo avvio
 
         # Configura il logger (file handler subito, TkTextHandler dopo create_widgets)
         self._setup_file_logging()
@@ -419,7 +441,7 @@ class BluetoothApp:
         device_frame = ttk.LabelFrame(frame, text="Dispositivi Bluetooth")
         device_frame.pack(fill="x", padx=PAD_LG, pady=PAD_LG)
 
-        self.device_list = tk.Listbox(device_frame, height=6, width=45)
+        self.device_list = tk.Listbox(device_frame, height=6, width=40)
         self.device_list.grid(row=0, column=0, padx=PAD_SM, pady=PAD_SM)
 
         device_controls = ttk.Frame(device_frame)
