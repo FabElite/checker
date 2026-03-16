@@ -11,6 +11,38 @@ import csv
 import struct
 import re
 
+def get_version() -> str:
+    """
+    Restituisce la stringa di versione con questa priorità:
+    1. _version.py  — generato dal build script, presente nell'exe PyInstaller
+    2. git describe  — disponibile in sviluppo se il repo ha almeno un tag
+    3. "dev"         — fallback
+    """
+    # 1. File generato dal build (presente nell'exe o se build già eseguito)
+    try:
+        import _version
+        return _version.__version__
+    except ImportError:
+        pass
+
+    # 2. git describe (solo in sviluppo)
+    import subprocess, os
+    try:
+        result = subprocess.run(
+            ["git", "describe", "--tags", "--dirty", "--always"],
+            capture_output=True, text=True, timeout=3,
+            cwd=os.path.dirname(os.path.abspath(__file__))
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+
+    return "dev"
+
+
+APP_VERSION = get_version()
+
 LOG_FILENAME = "app.log"
 LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
@@ -223,7 +255,7 @@ class BluetoothApp:
 
         # Configurazione finestra principale
         self.root = main_window
-        self.root.title("Checker")
+        self.root.title(f"Checker  {APP_VERSION}")
 
         # Variabili di stato applicazione
         self.log_autoscroll = tk.BooleanVar(value=True)  # flag auto-scroll log
