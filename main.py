@@ -271,6 +271,7 @@ class BluetoothApp:
         self.log_debug      = tk.BooleanVar(value=_saved.get("log_debug", False))
         self.log_autoscroll.trace_add("write", lambda *_: self._save_settings())
         self.log_debug.trace_add("write", self._on_log_debug_changed)
+        self._save_settings()   # scrive settings.ini subito, anche al primo avvio
 
         # Configura il logger (file handler subito, TkTextHandler dopo create_widgets)
         self._setup_file_logging()
