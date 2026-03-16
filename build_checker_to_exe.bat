@@ -3,11 +3,19 @@ setlocal
 
 set "PROJECT_DIR=C:\Users\fossato\PycharmProjects\checker"
 set "VENV_DIR=%PROJECT_DIR%\.venv"
+set "SITE_PACKAGES=%VENV_DIR%\Lib\site-packages"
 set "ENTRY_POINT=%PROJECT_DIR%\main.py"
 set "VERSION_FILE=%PROJECT_DIR%\_version.py"
 set "EXE_NAME=checker"
 
 call "%VENV_DIR%\Scripts\activate.bat" || goto :fail
+
+:: ── Verifica che shared_lib esista in site-packages ──────────────────────────
+if not exist "%SITE_PACKAGES%\shared_lib" (
+    echo ERRORE: shared_lib non trovata in %SITE_PACKAGES%
+    echo Esegui: pip install shared_lib oppure pip install -e .
+    goto :fail
+)
 
 :: ── Genera _version.py con la versione git corrente ──────────────────────────
 echo Lettura versione da git...
@@ -26,18 +34,25 @@ echo Versione rilevata: %GIT_VERSION%
 ) > "%VERSION_FILE%"
 echo _version.py scritto.
 
+:: ── Elimina spec precedente per evitare conflitti con --add-data ─────────────
+if exist "%PROJECT_DIR%\%EXE_NAME%.spec" (
+    echo Rimuovo spec precedente...
+    del "%PROJECT_DIR%\%EXE_NAME%.spec"
+)
+
 :: ── Build PyInstaller ─────────────────────────────────────────────────────────
-pyinstaller --noconfirm --onefile --windowed ^
+pyinstaller --noconfirm --clean --onefile --windowed ^
   --name="%EXE_NAME%" ^
   --icon="%PROJECT_DIR%\checker.ico" ^
-  --add-data="%PROJECT_DIR%\shared_lib;shared_lib" ^
+  --add-data="%SITE_PACKAGES%\shared_lib;shared_lib" ^
+  --add-data="%PROJECT_DIR%\ui_status_bar.py;." ^
   --add-data="%PROJECT_DIR%\config.csv;." ^
   --add-data="%VERSION_FILE%;." ^
   --hidden-import=winrt ^
   --hidden-import=winrt.windows.foundation.collections ^
   "%ENTRY_POINT%" || goto :fail
 
-:: ── Pulizia: rimuove _version.py dalla cartella sorgente dopo il build ────────
+:: ── Pulizia _version.py dalla cartella sorgente ──────────────────────────────
 del "%VERSION_FILE%"
 
 echo.
