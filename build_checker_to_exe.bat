@@ -52,11 +52,15 @@ pyinstaller --noconfirm --clean --onefile --windowed ^
   --hidden-import=winrt.windows.foundation.collections ^
   "%ENTRY_POINT%" || goto :fail
 
+:: ── Rinomina l'exe aggiungendo la versione: checker_v0.1.0.exe ───────────────
+set "FINAL_EXE=%PROJECT_DIR%\dist\%EXE_NAME%_%GIT_VERSION%.exe"
+rename "%PROJECT_DIR%\dist\%EXE_NAME%.exe" "%EXE_NAME%_%GIT_VERSION%.exe"
+
 :: ── Pulizia _version.py dalla cartella sorgente ──────────────────────────────
 del "%VERSION_FILE%"
 
 echo.
-echo OK - EXE in: %PROJECT_DIR%\dist\%EXE_NAME%.exe
+echo OK - EXE in: %FINAL_EXE%
 echo Versione inclusa: %GIT_VERSION%
 goto :end
 
