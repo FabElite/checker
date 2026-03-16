@@ -54,19 +54,37 @@ class TriStatusBar(tk.Frame):
         super().__init__(parent, bg=self._BG, pady=6)
         # ─ riga 0
         self._phase = False
-        self.led_ui  = tk.Label(self, text="●", bg=self._BG, fg="#555555", font=("Helvetica", 18))
-        self.led_ble = tk.Label(self, text="●", bg=self._BG, fg="#555555", font=("Helvetica", 18))
+
+        # Blocco LED UI (colonna 0-1)
+        led_ui_frame = tk.Frame(self, bg=self._BG)
+        led_ui_frame.grid(row=0, column=0, padx=(10, 4))
+        self.led_ui = tk.Label(led_ui_frame, text="●", bg=self._BG, fg="#555555", font=("Helvetica", 16))
+        self.led_ui.grid(row=0, column=0)
+        tk.Label(led_ui_frame, text="UI", bg=self._BG, fg="#666688", font=("Helvetica", 7)).grid(row=1, column=0)
+
+        # Separatore verticale
+        tk.Frame(self, bg="#444466", width=1).grid(row=0, column=1, sticky="ns", padx=(2, 4), pady=4)
+
+        # Blocco LED BLE (colonna 2-3)
+        led_ble_frame = tk.Frame(self, bg=self._BG)
+        led_ble_frame.grid(row=0, column=2, padx=(4, 6))
+        self.led_ble = tk.Label(led_ble_frame, text="●", bg=self._BG, fg="#555555", font=("Helvetica", 16))
+        self.led_ble.grid(row=0, column=0)
+        tk.Label(led_ble_frame, text="BLE", bg=self._BG, fg="#666688", font=("Helvetica", 7)).grid(row=1, column=0)
+
+        # Testo stato BLE + info dispositivo
         self.lbl_ble = tk.Label(self, text="BLE: Disconnesso", bg=self._BG, fg="#aaaaaa", font=("Helvetica", 9, "bold"))
         self.lbl_dev = tk.Label(self, text="—", bg=self._BG, fg="#777799", font=("Helvetica", 8))
-        self.led_ui.grid(row=0, column=0, padx=(10, 6))
-        self.led_ble.grid(row=0, column=1, padx=(8, 6))
-        self.lbl_ble.grid(row=0, column=2, sticky="w")
-        self.lbl_dev.grid(row=0, column=3, padx=(12, 10), sticky="w")
+        self.lbl_ble.grid(row=0, column=3, sticky="w", padx=(2, 8))
+        self.lbl_dev.grid(row=0, column=4, padx=(4, 10), sticky="w")
 
-        # ─ riga 1 (attività)
+        # ─ riga 1 (attività + checkbox autoscroll a destra)
         self._activity_var = tk.StringVar(value="")
         self.lbl_activity = tk.Label(self, textvariable=self._activity_var, bg=self._BG, fg=self._SEV_COLORS["info"], font=("Helvetica", 9))
-        self.lbl_activity.grid(row=1, column=0, columnspan=99, sticky="w", padx=10, pady=(2, 0))
+        self.lbl_activity.grid(row=1, column=0, columnspan=5, sticky="w", padx=10, pady=(2, 0))
+        # Checkbox auto-scroll – inserita dall'app dopo init
+        self._autoscroll_placeholder = tk.Frame(self, bg=self._BG)
+        self._autoscroll_placeholder.grid(row=1, column=99, sticky="e", padx=(4, 10), pady=(2, 0))
 
         # ─ riga 2 (progress)
         self.progress = ttk.Progressbar(self, orient="horizontal", mode="indeterminate", length=260)
@@ -331,11 +349,13 @@ class BluetoothApp:
         read_frame.pack(fill="x", padx=PAD_LG, pady=(0, PAD))
         read_frame.columnconfigure(1, weight=1)
 
-        ttk.Label(read_frame, text="Indirizzo (es. 0x0016):").grid(row=0, column=0, padx=PAD, pady=PAD_SM, sticky="w")
+        ttk.Label(read_frame, text="Indirizzo:").grid(row=0, column=0, padx=PAD, pady=PAD_SM, sticky="w")
         self.read_address_entry = ttk.Entry(read_frame, width=12)
+        self.read_address_entry.insert(0, "0x0016")
+        self.read_address_entry.bind("<FocusIn>", lambda e: self.read_address_entry.delete(0,"end") if self.read_address_entry.get()=="0x0016" else None)
         self.read_address_entry.grid(row=0, column=1, padx=PAD_SM, pady=PAD_SM, sticky="w")
 
-        ttk.Label(read_frame, text="Dimensione (byte):").grid(row=1, column=0, padx=PAD, pady=PAD_SM, sticky="w")
+        ttk.Label(read_frame, text="N. byte:").grid(row=1, column=0, padx=PAD, pady=PAD_SM, sticky="w")
         self.data_size_entry = ttk.Entry(read_frame, width=6)
         self.data_size_entry.grid(row=1, column=1, padx=PAD_SM, pady=PAD_SM, sticky="w")
 
@@ -398,7 +418,7 @@ class BluetoothApp:
 
         # tk.Entry per poter impostare highlightcolor (validazione visuale)
         self.data_entry = tk.Entry(
-            data_entry_frame, width=28,
+            data_entry_frame,
             font=("Courier New", 10),
             relief="sunken", borderwidth=1,
             highlightthickness=2,
