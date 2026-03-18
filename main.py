@@ -772,9 +772,16 @@ class BluetoothApp:
         return chunks
 
     async def _scarica_parametri_async(self):
+        """
+        Legge tutti i parametri dal dispositivo e aggiorna il Treeview.
+        Restituisce un dict {item_id: valore_letto} per uso immediato
+        da parte di _lettura_e_verifica_async (evita la race condition
+        con root.after che aggiorna il Treeview in modo asincrono).
+        """
         children = list(self.tree.get_children())
         if not children:
-            return
+            return {}
+        letti_map = {}  # item_id → valore interpretato
 
         # Rimuove highlight mismatch dalla sessione precedente
         for item in children:
@@ -816,6 +823,7 @@ class BluetoothApp:
                 else:
                     self.log.error(f"'{name}': lettura chunk fallita.")
                     value = "N/A"
+                letti_map[item_id] = value
                 self.root.after(0, lambda it=item_id, v=value: self.tree.set(it, column="Letti", value=v))
 
                 done += 1
@@ -831,6 +839,7 @@ class BluetoothApp:
 
         # Fine
         self.root.after(0, self._end_activity_success, "✓ Lettura parametri completata.")
+        return letti_map
 
     def _end_activity_success(self, msg: str):
         self.status_bar.set_activity(msg, "success")
@@ -844,7 +853,9 @@ class BluetoothApp:
             return
 
         # Conta i parametri con un valore da scrivere
-        n_params = sum(1 for item in self.tree.get_children() if self.tree.item(item)['values'][3])
+        # Nota: str() necessario perché Tkinter restituisce 0 (int) per valori numerici,
+        # e `if 0` sarebbe falsy anche quando 0 è un valore legittimo da scrivere.
+        n_params = sum(1 for item in self.tree.get_children() if str(self.tree.item(item)['values'][3]) != "")
         if n_params == 0:
             messagebox.showinfo("Scrivi Parametri", "Nessun parametro da scrivere.")
             return
@@ -872,12 +883,12 @@ class BluetoothApp:
         if total == 0:
             return
 
-        n_params = sum(1 for item in children if self.tree.item(item)['values'][3])
+        n_params = sum(1 for item in children if str(self.tree.item(item)['values'][3]) != "")
         errors = []
         for idx, item in enumerate(children):
             values = self.tree.item(item)['values']
             name, address_str, data_type, to_write, _ = values
-            if not to_write:
+            if str(to_write) == "":
                 self.log.debug(f"Salto '{name}': nessun valore da scrivere.")
                 continue
             try:
@@ -941,20 +952,22 @@ class BluetoothApp:
         asyncio.run_coroutine_threadsafe(self._lettura_e_verifica_async(), self._ble_loop)
 
     async def _lettura_e_verifica_async(self):
-        # Prima scarica (legge) i parametri
-        await self._scarica_parametri_async()
+        # Prima scarica (legge) i parametri; il dict ritornato ha i valori
+        # già disponibili senza aspettare che root.after aggiorni il Treeview.
+        letti_map = await self._scarica_parametri_async()
 
-        # Ora verifica
+        # Ora verifica usando direttamente letti_map (nessuna race condition)
         children = list(self.tree.get_children())
         errors = []
         for item in children:
             values = self.tree.item(item)['values']
-            name, _, data_type, to_write, letti = values
-            if not to_write:
+            name, _, data_type, to_write, _ = values
+            if str(to_write) == "":
                 continue
+            letto = letti_map.get(item, "")
             # Normalizza per confronto (stringhe con virgola)
             to_write_norm = str(to_write).replace(',', '.')
-            letti_norm = str(letti).replace(',', '.')
+            letti_norm    = str(letto).replace(',', '.')
             if to_write_norm != letti_norm:
                 errors.append(name)
                 tags = [t for t in self.tree.item(item, "tags") if t not in ("oddrow", "evenrow", "mismatch")]
@@ -962,16 +975,17 @@ class BluetoothApp:
 
         # ── Log riepilogo verifica ───────────────────────────────────────────
         verified = sum(1 for item in self.tree.get_children()
-                       if self.tree.item(item)['values'][3])  # ha valore atteso
+                       if str(self.tree.item(item)['values'][3]) != "")  # ha valore atteso
         ok_count = verified - len(errors)
         self.log.info(f"── Verifica parametri: OK={ok_count}  KO={len(errors)} ──")
         if errors:
             self.log.error("  Parametri non conformi (atteso → letto):")
             for item in self.tree.get_children():
                 v = self.tree.item(item)['values']
-                name, addr_str, dtype, to_write, letto = v
-                if not to_write:
+                name, addr_str, dtype, to_write, _ = v
+                if str(to_write) == "":
                     continue
+                letto = letti_map.get(item, "")
                 if str(to_write).replace(',', '.') != str(letto).replace(',', '.'):
                     self.log.error(f"  KO  {name:<30s} {addr_str}  atteso={to_write}  letto={letto}")
 
@@ -1304,20 +1318,23 @@ class BluetoothApp:
         """Scrive dati su BLE in modo asincrono utilizzando AsyncioWorker."""
         if not self.ble_manager.get_connection_status():
             self.log.error("Scrittura fallita: nessun dispositivo connesso.")
-            messagebox.showerror("Errore", "Nessun dispositivo connesso!")
+            self.root.after(0, lambda: messagebox.showerror(
+                "Errore", "Nessun dispositivo connesso!"))
             return False
         try:
             result = await self.ble_manager.write_eeprom(starting_address, data)
             if not result:
                 self.log.error(f"Scrittura a {hex(starting_address)}: dispositivo non ha confermato.")
-                messagebox.showerror("Errore", "Scrittura fallita: dispositivo non ha confermato l'operazione.")
+                self.root.after(0, lambda: messagebox.showerror(
+                    "Errore", "Scrittura fallita: dispositivo non ha confermato l'operazione."))
                 return False
             else:
                 self.log.debug(f"write_eeprom {hex(starting_address)}: confermato dal dispositivo.")
                 return True
         except Exception as e:
             self.log.error(f"Errore durante la scrittura all'indirizzo {hex(starting_address)}: {e}")
-            messagebox.showerror("Errore", f"Errore durante la scrittura: {str(e)}")
+            self.root.after(0, lambda err=str(e): messagebox.showerror(
+                "Errore", f"Errore durante la scrittura: {err}"))
             return False
 
     # ── Progress wrapper (compatibilità con logica esistente) ───────────────
