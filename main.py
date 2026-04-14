@@ -1398,13 +1398,19 @@ class BluetoothApp:
             # UINT8[N] — array di byte (es. IP: "192.168.1.1" o "192,168,1,1")
             if re.match(r'^UINT8\[\d+\]$', data_type):
                 n = int(re.search(r'\d+', data_type[5:]).group())
-                # Accetta sia "." che "," come separatori
-                sep = ',' if ',' in value_str else '.'
-                parts = [int(x.strip()) for x in value_str.split(sep)]
-                if len(parts) != n:
-                    raise ValueError(
-                        f"UINT8[{n}]: attesi {n} valori, ricevuti {len(parts)} ('{value_str}')"
-                    )
+                # Accetta "." o "," come separatori (formato usato da interpret_data)
+                # Se nessun separatore è presente, il valore è uno scalare: replicalo N volte
+                # es. "0" → [0, 0, 0, 0]  oppure  "192.168.1.1" → [192, 168, 1, 1]
+                if '.' in value_str or ',' in value_str:
+                    sep = ',' if ',' in value_str else '.'
+                    parts = [int(x.strip()) for x in value_str.split(sep)]
+                    if len(parts) != n:
+                        raise ValueError(
+                            f"UINT8[{n}]: attesi {n} valori, ricevuti {len(parts)} ('{value_str}')"
+                        )
+                else:
+                    scalar = int(value_str)
+                    parts = [scalar] * n
                 if any(v < 0 or v > 255 for v in parts):
                     raise ValueError(f"UINT8[{n}]: tutti i valori devono essere 0-255")
                 return bytearray(parts)
@@ -1475,7 +1481,6 @@ class BluetoothApp:
             return '.'.join(str(b) for b in data)
         # UINT little-endian
         if data_type in ('UINT8', 'UINT16', 'UINT24', 'UINT32'):
-            val = 0
             val = 0
             for i, byte in enumerate(data):
                 val |= (byte << (8 * i))
