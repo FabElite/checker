@@ -749,6 +749,11 @@ class BluetoothApp:
                 valid.append((item_id, name, address, size, data_type))
             except (ValueError, KeyError):
                 self.log.error(f"Parametro '{name}' scartato: indirizzo o tipo non valido.")
+                # Evidenzia il parametro nel Treeview
+                self.root.after(0, lambda it=item_id: (
+                    self.tree.set(it, column="Letti", value="⛔ TIPO ERRATO"),
+                    self.tree.item(it, tags=["mismatch"])
+                ))
         valid.sort(key=lambda p: p[2])  # ordina per address
 
         chunks = []
@@ -839,6 +844,21 @@ class BluetoothApp:
 
         # Fine
         self.root.after(0, self._end_activity_success, "✓ Lettura parametri completata.")
+        invalid = [
+            self.tree.item(it)['values'][0]
+            for it in self.tree.get_children()
+            if self.tree.item(it)['values'][4] == "⛔ TIPO ERRATO"
+        ]
+        if invalid:
+            self.root.after(0, lambda names=invalid: (
+                self.status_bar.set_activity(
+                    f"⚠ Lettura completata con {len(names)} tipo/i non valido/i.", "warn"),
+                messagebox.showwarning(
+                    "Tipi non validi",
+                    f"I seguenti parametri hanno un tipo non riconosciuto nel CSV "
+                    f"e non sono stati letti:\n\n" + "\n".join(f"  • {n}" for n in names)
+                )
+            ))
         return letti_map
 
     def _end_activity_success(self, msg: str):
@@ -1102,8 +1122,14 @@ class BluetoothApp:
             self._ble_loop
         )
         try:
-            fut.result()
-            self.root.after(0, self.on_device_connected, address, dev_name)
+            ok = fut.result()
+            if ok:
+                self.root.after(0, self.on_device_connected, address, dev_name)
+            else:
+                self.root.after(0, lambda: (
+                    self.status_bar.set_ble("err"),
+                    self.status_bar.set_activity("⛔ Connessione fallita.", "error")
+                ))
         except Exception as e:
             self.log.error(f"Errore durante la connessione BLE: {e}")
             self.root.after(0, lambda: (
@@ -1354,12 +1380,13 @@ class BluetoothApp:
         try:
             data_type = data_type.upper()
             value_str = str(value_str).strip()
+            # HEX grezzo (es. "4H", "2H")
             if data_type.endswith('H'):
                 clean_hex = value_str.replace(" ", "")
                 if len(clean_hex) % 2 != 0:
                     clean_hex = "0" + clean_hex
                 return bytearray.fromhex(clean_hex)
-            # STRING
+            # STRING<N>
             if data_type.startswith('STRING'):
                 size = self.get_size_from_type(data_type)
                 encoded = value_str.encode('utf-8')
@@ -1368,25 +1395,39 @@ class BluetoothApp:
             if data_type == 'FLOAT32':
                 val = float(value_str.replace(',', '.'))
                 return struct.pack('<f', val)
-            # UINT
-            elif data_type.startswith('UINT'):
-                bits = int(re.search(r'\d+', data_type).group())
+            # UINT8[N] — array di byte (es. IP: "192.168.1.1" o "192,168,1,1")
+            if re.match(r'^UINT8\[\d+\]$', data_type):
+                n = int(re.search(r'\d+', data_type[5:]).group())
+                # Accetta sia "." che "," come separatori
+                sep = ',' if ',' in value_str else '.'
+                parts = [int(x.strip()) for x in value_str.split(sep)]
+                if len(parts) != n:
+                    raise ValueError(
+                        f"UINT8[{n}]: attesi {n} valori, ricevuti {len(parts)} ('{value_str}')"
+                    )
+                if any(v < 0 or v > 255 for v in parts):
+                    raise ValueError(f"UINT8[{n}]: tutti i valori devono essere 0-255")
+                return bytearray(parts)
+            # UINT8 / UINT16 / UINT24 / UINT32
+            if data_type in ('UINT8', 'UINT16', 'UINT24', 'UINT32'):
                 val = int(value_str)
-                if bits == 8:
+                if data_type == 'UINT8':
                     return struct.pack('<B', val)
-                elif bits == 16:
+                elif data_type == 'UINT16':
                     return struct.pack('<H', val)
-                elif bits == 24:
+                elif data_type == 'UINT24':
                     return struct.pack('<I', val)[:3]
-                elif bits == 32:
+                elif data_type == 'UINT32':
                     return struct.pack('<I', val)
-            return None
+            # Tipo non riconosciuto — errore esplicito, nessun fallback silenzioso
+            raise ValueError(f"Tipo dati non riconosciuto: '{data_type}'. "
+                             f"Tipi validi: UINT8, UINT16, UINT24, UINT32, FLOAT32, "
+                             f"STRING<N>, UINT8[N], <N>H")
         except Exception as e:
             self.log.error(f"Errore preparazione dati per scrittura: {e}")
             return None
 
     def get_size_from_type(self, data_type):
-        original_data_type = data_type
         data_type = data_type.upper()
         if data_type.endswith('H'):
             data_type = data_type[:-1]  # rimuovi 'H'
@@ -1394,34 +1435,56 @@ class BluetoothApp:
             'UINT8': 1,
             'UINT16': 2,
             'UINT24': 3,
+            'UINT32': 4,
             'FLOAT32': 4,
         }
         if data_type.startswith('STRING'):
             match = re.search(r'\d+', data_type)
             return int(match.group()) if match else 20
-        return sizes.get(data_type, 1)
+        # UINT8[N] — array di N byte (es. UINT8[4] per un indirizzo IP)
+        if re.match(r'^UINT8\[\d+\]$', data_type):
+            return int(re.search(r'\d+', data_type[5:]).group())
+        if data_type in sizes:
+            return sizes[data_type]
+        # Tipo non riconosciuto — errore esplicito, nessun fallback a 1
+        raise ValueError(f"Tipo dati non riconosciuto: '{data_type}'. "
+                         f"Tipi validi: UINT8, UINT16, UINT24, UINT32, FLOAT32, "
+                         f"STRING<N>, UINT8[N], <N>H")
 
     def interpret_data(self, data, data_type):
         if not data:
             return "N/A"
         data_type = data_type.upper()
+        # HEX grezzo
         if data_type.endswith('H'):
             return ' '.join(f'{b:02x}' for b in data)
+        # STRING<N>
         if data_type.startswith('STRING'):
             try:
                 text = data.decode('utf-8', errors='ignore').split('\x00')[0]
                 return text.strip()
             except Exception:
                 return "Errore Decodifica"
+        # FLOAT32
         if data_type == 'FLOAT32':
             val = struct.unpack_from('<f', data)[0]
             formatted = f"{val:.10f}".replace('.', ',').rstrip('0').rstrip(',')
             return formatted if formatted else "0"
+        # UINT8[N] — array di N byte (es. IP: "192.168.1.1")
+        if re.match(r'^UINT8\[\d+\]$', data_type):
+            return '.'.join(str(b) for b in data)
         # UINT little-endian
-        val = 0
-        for i, byte in enumerate(data):
-            val |= (byte << (8 * i))
-        return val
+        if data_type in ('UINT8', 'UINT16', 'UINT24', 'UINT32'):
+            val = 0
+            val = 0
+            for i, byte in enumerate(data):
+                val |= (byte << (8 * i))
+            return val
+        # Tipo non riconosciuto — errore esplicito, nessun fallback silenzioso
+        raise ValueError(
+            f"Tipo dati non riconosciuto in interpret_data: '{data_type}'. "
+            f"Tipi validi: UINT8, UINT16, UINT24, UINT32, FLOAT32, STRING<N>, UINT8[N], <N>H"
+        )
 
     # ── Heartbeat UI e chiusura ─────────────────────────────────────────────
     def _pulse_heartbeat(self):
