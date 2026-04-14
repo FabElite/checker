@@ -258,6 +258,138 @@ def setup_style():
     style.configure("Treeview.Heading", font=("Helvetica", 9, "bold"))
 
 
+# ── Tabella di riferimento tipi dati supportati ──────────────────────────────
+# (tipo, byte, esempio valore, descrizione)
+TIPI_SUPPORTATI = [
+    ("UINT8",      "1",   "0 … 255",              "Intero senza segno 8 bit"),
+    ("UINT16",     "2",   "0 … 65535",             "Intero senza segno 16 bit, little-endian"),
+    ("UINT24",     "3",   "0 … 16777215",           "Intero senza segno 24 bit, little-endian"),
+    ("UINT32",     "4",   "0 … 4294967295",         "Intero senza segno 32 bit, little-endian"),
+    ("FLOAT32",    "4",   "-0,6704  /  3,14",       "Virgola mobile 32 bit IEEE 754, sep. virgola"),
+    ("STRING<N>",  "N",   "STRING20  →  testo",     "Stringa UTF-8 di N byte, padding con \\0"),
+    ("UINT8[N]",   "N",   "UINT8[4]  →  192.168.1.1", "Array di N byte separati da punto"),
+    ("<N>H",       "N",   "4H  →  AB CD EF 01",     "N byte grezzi in esadecimale"),
+]
+
+
+class TreeviewTypeTooltip:
+    """
+    Mostra un tooltip quando il cursore si trova sopra la colonna 'Tipo'
+    del Treeview dei parametri. Il popup riporta tipo, dimensione e
+    una breve descrizione presi da TIPI_SUPPORTATI.
+    """
+
+    # Mappa tipo → (byte, esempio, descrizione) per lookup rapido
+    _TYPE_INFO = {t: (b, ex, desc) for t, b, ex, desc in TIPI_SUPPORTATI}
+
+    # Tipi "famiglia": prefisso → riga corrispondente in _TYPE_INFO
+    _FAMILY_PREFIX = [
+        ("STRING", "STRING<N>"),
+        ("UINT8[",  "UINT8[N]"),
+    ]
+
+    def __init__(self, tree: ttk.Treeview, tipo_col: str = "Tipo"):
+        self._tree = tree
+        self._col  = tipo_col
+        self._tip  = None   # Toplevel attivo
+        self._last = None   # ultimo item+colonna per evitare ridisegni inutili
+
+        tree.bind("<Motion>",  self._on_motion)
+        tree.bind("<Leave>",   self._hide)
+        tree.bind("<Button>",  self._hide)
+
+    def _resolve(self, raw: str):
+        """Trova la riga in _TYPE_INFO corrispondente al tipo raw (case-insensitive)."""
+        key = raw.upper()
+        if key in self._TYPE_INFO:
+            return key, *self._TYPE_INFO[key]
+        # Famiglie con pattern (STRING20, UINT8[4], 4H, …)
+        for prefix, canonical in self._FAMILY_PREFIX:
+            if key.startswith(prefix):
+                return canonical, *self._TYPE_INFO[canonical]
+        # Tipo hex generico <N>H
+        if key.endswith("H") and key[:-1].isdigit():
+            return "<N>H", *self._TYPE_INFO["<N>H"]
+        return None
+
+    def _on_motion(self, event):
+        tree = self._tree
+        col_id = tree.identify_column(event.x)     # "#1", "#2", …
+        row_id = tree.identify_row(event.y)
+
+        # Ricava il nome della colonna dal suo id numerico
+        try:
+            col_name = tree.column(col_id, option="id")
+        except Exception:
+            self._hide()
+            return
+
+        if col_name != self._col or not row_id:
+            self._hide()
+            return
+
+        # Evita di ridisegnare se siamo sulla stessa cella
+        cell_key = (row_id, col_id)
+        if cell_key == self._last:
+            return
+        self._last = cell_key
+
+        raw_type = tree.set(row_id, self._col)
+        info = self._resolve(raw_type)
+        if not info:
+            self._hide()
+            return
+
+        canonical, byte_size, esempio, descrizione = info
+        self._show(event, raw_type, canonical, byte_size, esempio, descrizione)
+
+    def _show(self, event, raw, canonical, byte_size, esempio, descrizione):
+        self._hide()
+        x = self._tree.winfo_rootx() + event.x + 16
+        y = self._tree.winfo_rooty() + event.y + 12
+
+        tip = tk.Toplevel(self._tree)
+        tip.wm_overrideredirect(True)
+        tip.wm_geometry(f"+{x}+{y}")
+        tip.configure(bg="#fffbe6", relief="solid", borderwidth=1)
+
+        # Intestazione: tipo così com'è nel CSV + canonico se diverso
+        header = raw if raw.upper() == canonical else f"{raw}  →  {canonical}"
+
+        # CORREZIONE: pady asimmetrico spostato dentro .pack()
+        tk.Label(tip, text=header,
+                 bg="#fffbe6", fg="#333300",
+                 font=("Helvetica", 9, "bold"),
+                 padx=8, pady=0, anchor="w").pack(fill="x", pady=(4, 0))
+
+        tk.Label(tip, text=descrizione,
+                 bg="#fffbe6", fg="#555500",
+                 font=("Helvetica", 8),
+                 padx=8, pady=0, anchor="w").pack(fill="x")
+
+        sep = tk.Frame(tip, bg="#cccc99", height=1)
+        sep.pack(fill="x", padx=6, pady=3)
+
+        tk.Label(tip, text=f"Dimensione:  {byte_size} byte",
+                 bg="#fffbe6", fg="#444400",
+                 font=("Helvetica", 8),
+                 padx=8, pady=0, anchor="w").pack(fill="x")
+
+        # CORREZIONE: pady asimmetrico spostato dentro .pack()
+        tk.Label(tip, text=f"Esempio:       {esempio}",
+                 bg="#fffbe6", fg="#444400",
+                 font=("Helvetica", 8),
+                 padx=8, pady=0, anchor="w").pack(fill="x", pady=(0, 4))
+
+        self._tip = tip
+
+    def _hide(self, _event=None):
+        self._last = None
+        if self._tip:
+            self._tip.destroy()
+            self._tip = None
+
+
 # ╔══════════════════════════════════════════════════════════════════════════╗
 # ║                             APPLICAZIONE GUI                             ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
@@ -371,7 +503,80 @@ class BluetoothApp:
         logging.getLogger().addHandler(tk_handler)
 
     # ── UI ───────────────────────────────────────────────────────────────────
+    # ── Menu principale ──────────────────────────────────────────────────────
+    def _setup_menubar(self):
+        menubar = tk.Menu(self.root)
+
+        help_menu = tk.Menu(menubar, tearoff=0)
+        help_menu.add_command(label="Tipi supportati…", command=self._show_tipi_supportati)
+        help_menu.add_separator()
+        help_menu.add_command(
+            label=f"Versione  {APP_VERSION}",
+            state="disabled"
+        )
+        menubar.add_cascade(label="?", menu=help_menu)
+
+        self.root.config(menu=menubar)
+
+    def _show_tipi_supportati(self):
+        """Apre una finestra di dialogo con la tabella dei tipi dati supportati."""
+        win = tk.Toplevel(self.root)
+        win.title("Tipi dati supportati")
+        win.resizable(False, False)
+        win.grab_set()  # modale
+
+        # ─ Intestazione
+        tk.Label(win,
+                 text="Tipi dati utilizzabili nella colonna 'Tipo' del CSV",
+                 font=("Helvetica", 10, "bold"),
+                 pady=10).grid(row=0, column=0, columnspan=5, padx=16, sticky="w")
+
+        # ─ Header tabella
+        headers = ("Tipo", "Byte", "Esempio valore", "Descrizione")
+        col_widths = (12, 6, 28, 46)
+        for c, (h, w) in enumerate(zip(headers, col_widths)):
+            tk.Label(win, text=h,
+                     font=("Helvetica", 9, "bold"),
+                     width=w, anchor="w",
+                     bg="#dde", relief="flat",
+                     padx=6, pady=4
+                     ).grid(row=1, column=c, padx=(16 if c == 0 else 1, 1 if c < 3 else 16),
+                            pady=(0, 2), sticky="ew")
+
+        # ─ Righe dati
+        for r, (tipo, byte_n, esempio, descr) in enumerate(TIPI_SUPPORTATI):
+            bg = "#f7f7ff" if r % 2 == 0 else "#ffffff"
+            for c, (val, w) in enumerate(zip((tipo, byte_n, esempio, descr), col_widths)):
+                tk.Label(win, text=val,
+                         font=("Courier New" if c == 0 else "Helvetica", 9),
+                         width=w, anchor="w",
+                         bg=bg, padx=6, pady=3
+                         ).grid(row=r + 2, column=c,
+                                padx=(16 if c == 0 else 1, 1 if c < 3 else 16),
+                                sticky="ew")
+
+        # ─ Nota in fondo
+        note = (
+            "• I tipi sono case-insensitive nel CSV (es. uint8 = UINT8).\n"
+            "• STRING senza numero usa dimensione 20 come default.\n"
+            "• FLOAT32 accetta sia punto che virgola come separatore decimale.\n"
+            "• UINT8[N] in lettura usa '.' come separatore (es. 192.168.1.1);\n"
+            "  in scrittura accetta anche un singolo valore scalare (es. 0 → tutti zero)."
+        )
+        tk.Label(win, text=note,
+                 font=("Helvetica", 8), fg="#555555",
+                 justify="left", anchor="w",
+                 padx=16, pady=10
+                 ).grid(row=len(TIPI_SUPPORTATI) + 2, column=0, columnspan=4, sticky="w")
+
+        # ─ Pulsante chiudi
+        ttk.Button(win, text="Chiudi", command=win.destroy).grid(
+            row=len(TIPI_SUPPORTATI) + 3, column=0, columnspan=4, pady=(0, 12))
+
     def create_widgets(self):
+        # Menu principale
+        self._setup_menubar()
+
         # Frame principale verticale
         main_frame = ttk.Frame(self.root)
         main_frame.pack(fill="both", expand=True)
@@ -575,6 +780,9 @@ class BluetoothApp:
         self.tree.tag_configure("oddrow", background="lightgrey")
         self.tree.tag_configure("evenrow", background="white")
         self.tree.tag_configure("mismatch", background="#FEF3C7")  # giallo chiaro
+
+        # Tooltip sulla colonna Tipo
+        self._tipo_tooltip = TreeviewTypeTooltip(self.tree, tipo_col="Tipo")
 
         scrollbar = ttk.Scrollbar(param_frame, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=scrollbar.set)
