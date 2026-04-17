@@ -82,9 +82,9 @@ READ_RETRIES   = 3    # Numero di tentativi in caso di fallimento
 class BluetoothApp:
     """Classe principale per la gestione dell'applicazione Bluetooth."""
 
-    ble_manager = BLEManager()
 
     def __init__(self, main_window):
+        self.ble_manager = BLEManager()
         self.default_kmap_file_path    = None
         self.default_resmap_file_path  = None
         self.serial_finder_file_path   = None
@@ -269,7 +269,7 @@ class BluetoothApp:
                                 xscrollcommand=scrollbar_h.set)
 
         log_footer = ttk.Frame(main_frame)
-        log_footer.grid(row=4, column=0, sticky="w", padx=10, pady=(2, 8))
+        log_footer.grid(row=4, column=0, sticky="w", padx=10, pady=(2, 4))
         ttk.Checkbutton(log_footer, text="Auto-scroll",
                         variable=self.log_autoscroll).pack(side="left", padx=(0, 12))
         ttk.Checkbutton(log_footer, text="Debug",
@@ -362,7 +362,7 @@ class BluetoothApp:
 
         # ─ Scrittura EEPROM
         write_frame = ttk.LabelFrame(frame, text="Scrittura EEPROM")
-        write_frame.pack(fill="x", padx=PAD_LG, pady=(0, PAD_LG))
+        write_frame.pack(fill="x", padx=PAD_LG, pady=(0, PAD))
         write_frame.columnconfigure(1, weight=1)
 
         ttk.Label(write_frame, text="Indirizzo (es. 0x0016):").grid(
@@ -419,7 +419,7 @@ class BluetoothApp:
         self.tree.heading("Da Scrivere", text="Da Scrivere  ✎")
         self.tree.heading("Letti", text="Letti")
 
-        self.tree.column("Nome", width=160, minwidth=100, stretch=True)
+        self.tree.column("Nome", width=200, minwidth=100, stretch=True)
         self.tree.column("Indirizzo", width=80, minwidth=60, stretch=False, anchor="center")
         self.tree.column("Tipo", width=75, minwidth=55, stretch=False, anchor="center")
         self.tree.column("Da Scrivere", width=110, minwidth=80, stretch=True, anchor="center")
@@ -443,7 +443,7 @@ class BluetoothApp:
 
         # Container principale per i pulsanti
         controls_container = ttk.Frame(frame)
-        controls_container.pack(fill="x", padx=PAD_LG, pady=(0, PAD_LG))
+        controls_container.pack(fill="x", padx=PAD_LG, pady=(0, PAD_SM))
 
         # GRUPPO A: Gestione Configurazione (File CSV)
         # ---------------------------------------------------------
@@ -471,19 +471,16 @@ class BluetoothApp:
         # Sottogruppo Lettura
         self.leggi_btn = ttk.Button(dev_group, text="📥 Leggi Parametri",
                                     command=self.scarica_parametri)
-        self.leggi_btn.grid(row=0, column=0, padx=5, pady=10, sticky="ew")
+        self.leggi_btn.grid(row=0, column=0, padx=5, pady=6, sticky="ew")
 
         self.verifica_btn = ttk.Button(dev_group, text="🔎 Leggi e Verifica",
                                        command=self.lettura_e_verifica)
-        self.verifica_btn.grid(row=1, column=0, padx=5, pady=(0, 10), sticky="ew")
-
-        # Separatore visivo interno
-        ttk.Separator(dev_group, orient="vertical").grid(row=0, column=1, rowspan=2, sticky="ns", padx=10)
+        self.verifica_btn.grid(row=1, column=0, padx=5, pady=(0, 6), sticky="ew")
 
         # Azione Critica: Scrivi (messa a destra e più visibile)
         self.scrivi_btn = ttk.Button(dev_group, text="⚠ SCRIVI PARAMETRI",
                                      command=self.scrivi_parametri, style="Accent.TButton")
-        self.scrivi_btn.grid(row=0, column=2, rowspan=2, padx=15, pady=10, sticky="nsew")
+        self.scrivi_btn.grid(row=0, column=1, rowspan=2, padx=15, pady=6, sticky="nsew")
 
     # ── Editing inline "Da Scrivere" ─────────────────────────────────────────
 

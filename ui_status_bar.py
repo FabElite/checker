@@ -4,10 +4,9 @@ from tkinter import ttk
 
 class MiniStatusBar(tk.Frame):
     """
-    Barra di stato compatta a tre righe:
-      riga 0 : LED heartbeat UI · LED BLE · testo stato BLE · nome/MAC dispositivo
-      riga 1 : testo attività corrente (con severità cromatica)
-      riga 2 : barra di progresso (indeterminate | determinate)
+    Barra di stato compatta a due righe:
+ riga 0 : LED heartbeat UI · progress bar · LED BLE · testo stato BLE · nome/MAC dispositivo
+ riga 1 : testo attività corrente (con severità cromatica)
 
     Utilizzo tipico
     ---------------
@@ -52,19 +51,25 @@ class MiniStatusBar(tk.Frame):
             self, text="●", bg=self._BG, fg="#555555", font=("Helvetica", 18))
         self.led_ui.grid(row=0, column=0, padx=(10, 6))
 
+        # progress bar (compatta) tra LED UI e LED BLE
+        self.progress = ttk.Progressbar(
+            self, orient="horizontal", mode="indeterminate", length=160)
+        self.progress.grid(
+            row=0, column=1, padx=(0, 10), pady=0, sticky="w")
+
         self.led_ble = tk.Label(
             self, text="●", bg=self._BG, fg="#555555", font=("Helvetica", 18))
-        self.led_ble.grid(row=0, column=1, padx=(8, 6))
+        self.led_ble.grid(row=0, column=2, padx=(0, 6))
 
         self.lbl_ble = tk.Label(
             self, text="BLE: Disconnesso",
             bg=self._BG, fg="#aaaaaa", font=("Helvetica", 9, "bold"))
-        self.lbl_ble.grid(row=0, column=2, sticky="w")
+        self.lbl_ble.grid(row=0, column=3, sticky="w")
 
         self.lbl_dev = tk.Label(
             self, text="—",
             bg=self._BG, fg="#777799", font=("Helvetica", 8))
-        self.lbl_dev.grid(row=0, column=3, padx=(12, 10), sticky="w")
+        self.lbl_dev.grid(row=0, column=4, padx=(12, 10), sticky="w")
 
         # ── riga 1: testo attività ─────────────────────────────────────────────
         self._activity_var = tk.StringVar(value="")
@@ -74,14 +79,7 @@ class MiniStatusBar(tk.Frame):
             font=("Helvetica", 9))
         self.lbl_activity.grid(
             row=1, column=0, columnspan=99, sticky="w", padx=10, pady=(2, 0))
-
-        # ── riga 2: progress bar ───────────────────────────────────────────────
-        self.progress = ttk.Progressbar(
-            self, orient="horizontal", mode="indeterminate", length=260)
-        self.progress.grid(
-            row=2, column=0, columnspan=99, sticky="ew", padx=10, pady=(4, 4))
-
-        self.grid_columnconfigure(99, weight=1)
+        self.grid_columnconfigure(4, weight=1)
 
     # ── API pubblica ───────────────────────────────────────────────────────────
 

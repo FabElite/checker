@@ -8,15 +8,12 @@ import tkinter as tk
 from tkinter import ttk
 import logging
 
-
 # ── Spaziatura uniforme (condivisa con main.py) ──────────────────────────────
 PAD    = 8
 PAD_SM = 4
 PAD_LG = 12
 
-
 # ── Tabella di riferimento tipi dati supportati ──────────────────────────────
-# (tipo, byte, esempio valore, descrizione)
 TIPI_SUPPORTATI = [
     ("UINT8",      "1",   "0 … 255",                  "Intero senza segno 8 bit"),
     ("UINT16",     "2",   "0 … 65535",                 "Intero senza segno 16 bit, little-endian"),
@@ -28,37 +25,146 @@ TIPI_SUPPORTATI = [
     ("<N>H",       "N",   "4H  →  AB CD EF 01",        "N byte grezzi in esadecimale"),
 ]
 
-
 # ╔══════════════════════════════════════════════════════════════════════════╗
 # ║                              STILE GLOBALE                               ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
 def setup_style():
-    """Configura font e padding mantenendo il tema di sistema."""
     style = ttk.Style()
     style.configure("TButton",          font=("Helvetica", 10), padding=(8, 4))
     style.configure("TLabel",           font=("Helvetica", 10))
     style.configure("TEntry",           font=("Helvetica", 10), padding=3)
     style.configure("Status.TLabel",    font=("Helvetica", 10, "bold"))
-    style.configure("Treeview",         font=("Helvetica", 9), rowheight=22)
+    style.configure("Treeview",         font=("Helvetica", 9), rowheight=19)
     style.configure("Treeview.Heading", font=("Helvetica", 9, "bold"))
 
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║                          WIDGET CUSTOM MINIMAL                           ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
+class CanvasLED(tk.Canvas):
+    """Un LED grafico minimale con effetto alone (glow)."""
+    def __init__(self, parent, size=14, bg_color="#1e1e2e"):
+        super().__init__(parent, width=size, height=size, bg=bg_color, highlightthickness=0)
+        self.size = size
+        self.center = size / 2
+        self.radius = (size / 2) - 3
+
+        # Disegna l'alone (nascosto di default) e il core
+        self.halo = self.create_oval(1, 1, size-1, size-1, fill="", outline="")
+        self.core = self.create_oval(
+            self.center - self.radius, self.center - self.radius,
+            self.center + self.radius, self.center + self.radius,
+            fill="#333344", outline=""
+        )
+
+    def set_color(self, core_color, halo_color=None):
+        """Imposta il colore del LED. Passa halo_color per un leggero bagliore."""
+        self.itemconfig(self.core, fill=core_color)
+        if halo_color:
+            self.itemconfig(self.halo, fill=halo_color)
+        else:
+            self.itemconfig(self.halo, fill="")
+
+
+class PillProgress(tk.Canvas):
+    """Barra di progresso slim a forma di pillola (angoli arrotondati)."""
+
+    def __init__(self, parent, width=110, height=6, bg_color="#1e1e2e", track_color="#2a2a3d", fill_color="#44ff88"):
+        # Chiamata esplicita con keyword arguments per evitare errori Tcl
+        super().__init__(parent, width=width, height=height + 4, bg=bg_color, highlightthickness=0)
+
+        # Usiamo nomi variabili che non collidono con quelli interni di tk.Canvas
+        self.canvas_w = width
+        self.canvas_h = height
+        self.y_off = 2
+        self.track_c = track_color
+        self.fill_c = fill_color
+
+        self.mode = "indeterminate"
+        self.val = 0.0
+        self.indet_pos = 0.0
+        self.indet_dir = 1
+        self.is_running = False
+        self.anim_job = None
+
+        self._draw_track()
+
+    def _create_round_rect(self, x1, y1, x2, y2, color, tag=""):
+        """Disegna un rettangolo con angoli arrotondati (Pill)."""
+        r = (y2 - y1) / 2
+        if x2 - x1 < 2 * r: x2 = x1 + 2 * r
+
+        # Creazione della forma pillola: due cerchi alle estremità e un rettangolo centrale
+        self.create_oval(x1, y1, x1 + 2 * r, y2, fill=color, outline="", tags=tag)
+        self.create_oval(x2 - 2 * r, y1, x2, y2, fill=color, outline="", tags=tag)
+        self.create_rectangle(x1 + r, y1, x2 - r, y2, fill=color, outline="", tags=tag)
+
+    def _draw_track(self):
+        self._create_round_rect(0, self.y_off, self.canvas_w, self.y_off + self.canvas_h, self.track_c)
+
+    def _update_bar(self):
+        self.delete("bar")
+        if self.mode == "determinate":
+            if self.val <= 0: return
+            w = (self.val / 100.0) * self.canvas_w
+            w = max(w, self.canvas_h)
+            self._create_round_rect(0, self.y_off, w, self.y_off + self.canvas_h, self.fill_c, tag="bar")
+        else:
+            if not self.is_running: return
+            pill_w = 30
+            x1 = self.indet_pos
+            x2 = x1 + pill_w
+            self._create_round_rect(x1, self.y_off, x2, self.y_off + self.canvas_h, self.fill_c, tag="bar")
+
+    def _animate(self):
+        if not self.is_running: return
+        speed = 2.5
+        self.indet_pos += speed * self.indet_dir
+
+        if self.indet_pos + 30 >= self.canvas_w:
+            self.indet_pos = self.canvas_w - 30
+            self.indet_dir = -1
+        elif self.indet_pos <= 0:
+            self.indet_pos = 0
+            self.indet_dir = 1
+
+        self._update_bar()
+        self.anim_job = self.after(16, self._animate)
+
+    def config_mode(self, mode: str):
+        self.mode = mode
+        self.delete("bar")
+
+    def start(self):
+        if self.mode == "indeterminate" and not self.is_running:
+            self.is_running = True
+            self._animate()
+
+    def stop(self):
+        self.is_running = False
+        if self.anim_job:
+            self.after_cancel(self.anim_job)
+            self.anim_job = None
+        self.val = 0
+        self.delete("bar")
+
+    def set_value(self, value: float):
+        if self.mode == "determinate":
+            self.val = max(0.0, min(100.0, value))
+            self._update_bar()
 
 # ╔══════════════════════════════════════════════════════════════════════════╗
-# ║                       STATUS BAR (3 RIGHE INTEGRATE)                    ║
+# ║                       STATUS BAR (3 RIGHE INTEGRATE)                     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
 class TriStatusBar(tk.Frame):
-    """
-    Barra di stato compatta a tre righe:
-      riga 0 : LED UI (heartbeat) · LED BLE · label stato BLE · device info
-      riga 1 : testo attività (con severità cromatica)
-      riga 2 : barra di progresso (indeterminate | determinate)
-    """
     _BG = "#1e1e2e"
+
+    # Colori per i LED (core, halo)
     _LED_COLORS = {
-        "ok":   "#00cc44",
-        "err":  "#cc2222",
-        "warn": "#cc8800",
-        "off":  "#555555",
+        "ok":   ("#00cc44", "#004411"),
+        "err":  ("#cc2222", "#440000"),
+        "warn": ("#cc8800", "#442200"),
+        "off":  ("#333344", ""),
     }
     _SEV_COLORS = {
         "info":    "#cfd2ff",
@@ -68,69 +174,68 @@ class TriStatusBar(tk.Frame):
     }
 
     def __init__(self, parent):
-        super().__init__(parent, bg=self._BG, pady=6)
+        super().__init__(parent, bg=self._BG, pady=4)
         self._phase = False
 
         # ─ riga 0 ─ LED UI
         led_ui_frame = tk.Frame(self, bg=self._BG)
-        led_ui_frame.grid(row=0, column=0, padx=(10, 4))
-        self.led_ui = tk.Label(led_ui_frame, text="●", bg=self._BG, fg="#555555",
-                               font=("Helvetica", 16))
-        self.led_ui.grid(row=0, column=0)
+        led_ui_frame.grid(row=0, column=0, padx=(10, 6))
+        self.led_ui = CanvasLED(led_ui_frame, size=12, bg_color=self._BG)
+        self.led_ui.grid(row=0, column=0, pady=(0, 2))
         tk.Label(led_ui_frame, text="UI", bg=self._BG, fg="#666688",
-                 font=("Helvetica", 7)).grid(row=1, column=0)
+                 font=("Helvetica", 7, "bold")).grid(row=1, column=0)
 
-        # separatore verticale
-        tk.Frame(self, bg="#444466", width=1).grid(
-            row=0, column=1, sticky="ns", padx=(2, 4), pady=4)
+        # separatore verticale (ora più delicato)
+        sep_canvas = tk.Canvas(self, width=1, height=16, bg=self._BG, highlightthickness=0)
+        sep_canvas.create_line(0, 0, 0, 16, fill="#3a3a50", width=1)
+        sep_canvas.grid(row=0, column=1, sticky="ns", padx=(2, 6))
 
         # ─ riga 0 ─ LED BLE
         led_ble_frame = tk.Frame(self, bg=self._BG)
-        led_ble_frame.grid(row=0, column=2, padx=(4, 6))
-        self.led_ble = tk.Label(led_ble_frame, text="●", bg=self._BG, fg="#555555",
-                                font=("Helvetica", 16))
-        self.led_ble.grid(row=0, column=0)
+        led_ble_frame.grid(row=0, column=2, padx=(4, 8))
+        self.led_ble = CanvasLED(led_ble_frame, size=12, bg_color=self._BG)
+        self.led_ble.grid(row=0, column=0, pady=(0, 2))
         tk.Label(led_ble_frame, text="BLE", bg=self._BG, fg="#666688",
-                 font=("Helvetica", 7)).grid(row=1, column=0)
+                 font=("Helvetica", 7, "bold")).grid(row=1, column=0)
 
         # ─ riga 0 ─ testo BLE + info dispositivo
         self.lbl_ble = tk.Label(self, text="BLE: Disconnesso",
-                                bg=self._BG, fg="#aaaaaa", font=("Helvetica", 9, "bold"))
+                                bg=self._BG, fg="#aaaaaa", font=("Helvetica", 9))
         self.lbl_dev = tk.Label(self, text="—",
                                 bg=self._BG, fg="#777799", font=("Helvetica", 8))
         self.lbl_ble.grid(row=0, column=3, sticky="w", padx=(2, 8))
-        self.lbl_dev.grid(row=0, column=4, padx=(4, 10), sticky="w")
+        self.lbl_dev.grid(row=0, column=4, padx=(4, 12), sticky="w")
 
-        # ─ riga 1 ─ attività
+        # ─ riga 0 ─ attività (a sinistra della barra)
         self._activity_var = tk.StringVar(value="")
         self.lbl_activity = tk.Label(self, textvariable=self._activity_var,
                                      bg=self._BG, fg=self._SEV_COLORS["info"],
                                      font=("Helvetica", 9))
-        self.lbl_activity.grid(row=1, column=0, columnspan=5, sticky="w", padx=10, pady=(2, 0))
+        self.lbl_activity.grid(row=0, column=6, sticky="e", padx=(4, 8))
 
-        # placeholder per checkbox autoscroll (inserito dall'app dopo init)
-        self._autoscroll_placeholder = tk.Frame(self, bg=self._BG)
-        self._autoscroll_placeholder.grid(row=1, column=99, sticky="e",
-                                          padx=(4, 10), pady=(2, 0))
+        # ─ riga 0 ─ barra di progresso minimal fissa a destra
+        self.progress = PillProgress(self, width=110, height=6, bg_color=self._BG)
+        self.progress.grid(row=0, column=7, padx=(0, 10))
 
-        # ─ riga 2 ─ progress bar
-        self.progress = ttk.Progressbar(self, orient="horizontal",
-                                        mode="indeterminate", length=260)
-        self.progress.grid(row=2, column=0, columnspan=99,
-                           sticky="ew", padx=10, pady=(4, 4))
-        self.grid_columnconfigure(99, weight=1)
+        # col 5 (tra lbl_dev e lbl_activity) è lo spazio elastico
+        self.grid_columnconfigure(5, weight=1)
+        self.led_ui.set_color(*self._LED_COLORS["off"])
+        self.led_ble.set_color(*self._LED_COLORS["off"])
 
-    # ── API pubblica ─────────────────────────────────────────────────────────
+    # ── API pubblica (compatibile con l'esistente) ───────────────────────────
 
     def pulse(self):
         """Battito LED UI: indica che l'UI è viva."""
         self._phase = not self._phase
-        self.led_ui.config(fg="#44dd66" if self._phase else "#008822")
+        core = "#44ff88" if self._phase else "#008822"
+        halo = "#004411" if self._phase else ""
+        self.led_ui.set_color(core, halo)
 
     def set_ble(self, state: str):
         """Imposta stato BLE: 'ok' | 'err' | 'warn' | 'off'."""
-        col = self._LED_COLORS.get(state, "#555555")
-        self.led_ble.config(fg=col)
+        colors = self._LED_COLORS.get(state, self._LED_COLORS["off"])
+        self.led_ble.set_color(*colors)
+
         if state == "ok":
             self.lbl_ble.config(text="BLE: Connesso",    fg="#44ff88")
         elif state == "err":
@@ -141,37 +246,33 @@ class TriStatusBar(tk.Frame):
             self.lbl_ble.config(text="BLE: Disconnesso", fg="#aaaaaa")
 
     def set_device_info(self, name: str | None, address: str | None):
-        """Mostra/azzera info dispositivo collegato."""
         if name and address:
-            self.lbl_dev.config(text=f"{name} - {address}", fg="#88ffaa")
+            self.lbl_dev.config(text=f"{name} - {address}", fg="#cfd2ff")
         elif address:
-            self.lbl_dev.config(text=address, fg="#88ffaa")
+            self.lbl_dev.config(text=address, fg="#cfd2ff")
         else:
             self.lbl_dev.config(text="—", fg="#777799")
 
     def set_activity(self, text: str, severity: str = "info"):
-        """Imposta testo attività con severità: info | warn | error | success."""
         self._activity_var.set(text)
         self.lbl_activity.config(
             fg=self._SEV_COLORS.get(severity, self._SEV_COLORS["info"]))
 
-    # ── Progress helpers ─────────────────────────────────────────────────────
+    # ── Progress helpers (Mappati sulla nuova PillProgress) ──────────────────
 
     def progress_mode(self, mode: str):
         """'indeterminate' | 'determinate'"""
-        self.progress.config(mode=mode)
+        self.progress.config_mode(mode)
 
     def progress_start(self):
-        self.progress.start(10)
+        self.progress.start()
 
     def progress_stop(self):
         self.progress.stop()
-        self.progress["value"] = 0
 
     def progress_set(self, value: float):
         """Imposta il valore (0–100) in modalità determinate."""
-        self.progress["value"] = max(0.0, min(100.0, value))
-
+        self.progress.set_value(value)
 
 # ╔══════════════════════════════════════════════════════════════════════════╗
 # ║                           LOG HANDLER TK                                 ║
@@ -216,9 +317,8 @@ class TkTextHandler(logging.Handler):
 
         self.text_widget.after(0, _append)
 
-
 # ╔══════════════════════════════════════════════════════════════════════════╗
-# ║                     TOOLTIP COLONNA "TIPO" (TREEVIEW)                   ║
+# ║                     TOOLTIP COLONNA "TIPO" (TREEVIEW)                    ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
 class TreeviewTypeTooltip:
     """
